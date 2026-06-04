@@ -1,0 +1,35 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+node_modules
+dist
+dist-ssr
+*.local
+
+# Editor directories and files
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# SQLite Database files
+kkimage.db*
+
+# 环境变量文件（包含API密钥等敏感信息）
+.env
+.env.local
+.env.*.local
+
+# Generated images
+generated_images/
+src-tauri/target/
+node_modules/
+package-lock.json

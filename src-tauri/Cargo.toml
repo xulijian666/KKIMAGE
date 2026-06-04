@@ -1,0 +1,30 @@
+[package]
+name = "kkimage"
+version = "1.0.0"
+description = "KKIMAGE - AI Image Generation Desktop App"
+authors = ["KKCODER"]
+edition = "2021"
+
+[lib]
+name = "kkimage_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["tray-icon", "image-png"] }
+tauri-plugin-opener = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+reqwest = { version = "0.12", features = ["json", "multipart", "rustls-tls"] }
+tokio = { version = "1", features = ["full"] }
+rusqlite = { version = "0.31", features = ["bundled"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+image = "0.25"
+rfd = "0.14"
+dirs-next = "2.0"
+open = "5"
+regex = "1"
