@@ -360,3 +360,51 @@ pub fn get_all_settings(conn: &Connection) -> SqlResult<Vec<SettingRow>> {
     }
     Ok(results)
 }
+
+pub fn rename_project(conn: &Connection, id: &str, new_name: &str) -> SqlResult<()> {
+    conn.execute(
+        "UPDATE project SET name = ?1 WHERE id = ?2",
+        rusqlite::params![new_name, id],
+    )?;
+    Ok(())
+}
+
+pub fn delete_project(conn: &Connection, id: &str) -> SqlResult<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT image_path FROM generation WHERE project_id = ?1")?;
+    let rows = stmt.query_map([id], |row| row.get::<_, Option<String>>(0))?;
+    let mut paths = Vec::new();
+    for row in rows {
+        if let Ok(Some(path)) = row {
+            paths.push(path);
+        }
+    }
+
+    conn.execute("DELETE FROM generation WHERE project_id = ?1", [id])?;
+    conn.execute("DELETE FROM session WHERE project_id = ?1", [id])?;
+    conn.execute("DELETE FROM project WHERE id = ?1", [id])?;
+    Ok(paths)
+}
+
+pub fn rename_session(conn: &Connection, id: &str, new_title: &str) -> SqlResult<()> {
+    conn.execute(
+        "UPDATE session SET title = ?1, updated_at = datetime('now') WHERE id = ?2",
+        rusqlite::params![new_title, id],
+    )?;
+    Ok(())
+}
+
+pub fn delete_session(conn: &Connection, id: &str) -> SqlResult<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT image_path FROM generation WHERE session_id = ?1")?;
+    let rows = stmt.query_map([id], |row| row.get::<_, Option<String>>(0))?;
+    let mut paths = Vec::new();
+    for row in rows {
+        if let Ok(Some(path)) = row {
+            paths.push(path);
+        }
+    }
+
+    conn.execute("DELETE FROM generation WHERE session_id = ?1", [id])?;
+    conn.execute("DELETE FROM session WHERE id = ?1", [id])?;
+    Ok(paths)
+}
+

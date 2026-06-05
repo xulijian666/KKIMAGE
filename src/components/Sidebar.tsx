@@ -37,6 +37,10 @@ interface SidebarProps {
   onSelectSession: (id: string) => void;
   onCreateProject: () => void;
   onCreateSession: (projectId: string) => void;
+  onRenameProject: (id: string, name: string) => Promise<void>;
+  onDeleteProject: (id: string) => Promise<void>;
+  onRenameSession: (id: string, title: string) => Promise<void>;
+  onDeleteSession: (id: string) => Promise<void>;
   collapsed: boolean;
   onToggleCollapse: () => void;
   width: number;
@@ -88,6 +92,20 @@ const IconCopy = () => (
   </svg>
 );
 
+const IconEdit = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" />
+    <path d="M18.5 2.5a2.121 2.121 0 113 3L12 15l-4 1 1-4 9.5-9.5z" />
+  </svg>
+);
+
+const IconTrash = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <polyline points="3 6 5 6 21 6" />
+    <path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2" />
+  </svg>
+);
+
 function formatRelative(iso: string): string {
   const time = new Date(`${iso.replace(" ", "T")}Z`).getTime();
   if (Number.isNaN(time)) return "";
@@ -106,6 +124,10 @@ export function Sidebar({
   onSelectSession,
   onCreateProject,
   onCreateSession,
+  onRenameProject,
+  onDeleteProject,
+  onRenameSession,
+  onDeleteSession,
   collapsed,
   onToggleCollapse,
   width,
@@ -115,8 +137,13 @@ export function Sidebar({
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
-    sessionId: string;
+    type: "project" | "session";
+    id: string;
+    name: string;
   } | null>(null);
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editValue, setEditValue] = useState("");
 
   const recordsBySession = useMemo(() => {
     const map = new Map<string, GenerationRecord[]>();
@@ -160,6 +187,30 @@ export function Sidebar({
     setContextMenu(null);
   };
 
+  const handleSaveRename = async (id: string, type: "project" | "session") => {
+    const trimmed = editValue.trim();
+    if (trimmed && trimmed !== "") {
+      try {
+        if (type === "project") {
+          await onRenameProject(id, trimmed);
+        } else {
+          await onRenameSession(id, trimmed);
+        }
+      } catch (err) {
+        console.error("重命名失败", err);
+      }
+    }
+    setEditingId(null);
+  };
+
+  const handleRenameKeyDown = (e: React.KeyboardEvent, id: string, type: "project" | "session") => {
+    if (e.key === "Enter") {
+      handleSaveRename(id, type);
+    } else if (e.key === "Escape") {
+      setEditingId(null);
+    }
+  };
+
   if (collapsed) {
     return (
       <div className="sidebar collapsed" onClick={onToggleCollapse}>
@@ -201,14 +252,38 @@ export function Sidebar({
 
           return (
             <div className="project-block" key={project.id}>
-              <div className="project-row">
+              <div
+                className="project-row"
+                onContextMenu={(e) => {
+                  e.preventDefault();
+                  setContextMenu({
+                    x: e.clientX,
+                    y: e.clientY,
+                    type: "project",
+                    id: project.id,
+                    name: project.name,
+                  });
+                }}
+              >
                 <button className="tree-toggle" onClick={() => toggleProject(project.id)}>
                   {isOpen ? <IconChevronDown /> : <IconChevronRight />}
                 </button>
-                <button className="project-name" onClick={() => toggleProject(project.id)}>
-                  <IconFolder />
-                  <span>{project.name}</span>
-                </button>
+                {editingId === project.id ? (
+                  <input
+                    className="rename-input"
+                    value={editValue}
+                    onChange={(e) => setEditValue(e.target.value)}
+                    onKeyDown={(e) => handleRenameKeyDown(e, project.id, "project")}
+                    onBlur={() => handleSaveRename(project.id, "project")}
+                    autoFocus
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                ) : (
+                  <button className="project-name" onClick={() => toggleProject(project.id)}>
+                    <IconFolder />
+                    <span>{project.name}</span>
+                  </button>
+                )}
                 <span className="project-count">{count}</span>
                 <button
                   className="project-add-session"
@@ -231,11 +306,29 @@ export function Sidebar({
                         onClick={() => onSelectSession(session.id)}
                         onContextMenu={(e) => {
                           e.preventDefault();
-                          setContextMenu({ x: e.clientX, y: e.clientY, sessionId: session.id });
+                          setContextMenu({
+                            x: e.clientX,
+                            y: e.clientY,
+                            type: "session",
+                            id: session.id,
+                            name: session.title,
+                          });
                         }}
                       >
                         <span className="session-dot" />
-                        <span className="session-title">{session.title}</span>
+                        {editingId === session.id ? (
+                          <input
+                            className="rename-input"
+                            value={editValue}
+                            onChange={(e) => setEditValue(e.target.value)}
+                            onKeyDown={(e) => handleRenameKeyDown(e, session.id, "session")}
+                            onBlur={() => handleSaveRename(session.id, "session")}
+                            autoFocus
+                            onClick={(e) => e.stopPropagation()}
+                          />
+                        ) : (
+                          <span className="session-title">{session.title}</span>
+                        )}
                         <span className="session-time">{formatRelative(latest?.created_at || session.updated_at)}</span>
                       </div>
                     );
@@ -253,10 +346,73 @@ export function Sidebar({
           style={{ top: contextMenu.y, left: contextMenu.x }}
           onClick={(e) => e.stopPropagation()}
         >
-          <button className="context-menu-item" onClick={() => copySessionPrompt(contextMenu.sessionId)}>
-            <IconCopy />
-            <span>复制提示词</span>
-          </button>
+          {contextMenu.type === "session" ? (
+            <>
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  setEditingId(contextMenu.id);
+                  setEditValue(contextMenu.name);
+                  setContextMenu(null);
+                }}
+              >
+                <IconEdit />
+                <span>重命名</span>
+              </button>
+              <button className="context-menu-item" onClick={() => copySessionPrompt(contextMenu.id)}>
+                <IconCopy />
+                <span>复制提示词</span>
+              </button>
+              <button
+                className="context-menu-item danger"
+                onClick={() => {
+                  setContextMenu(null);
+                  if (confirm(`确定删除会话「${contextMenu.name}」吗？所有生成记录将被永久删除。`)) {
+                    onDeleteSession(contextMenu.id);
+                  }
+                }}
+              >
+                <IconTrash />
+                <span>删除</span>
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  setEditingId(contextMenu.id);
+                  setEditValue(contextMenu.name);
+                  setContextMenu(null);
+                }}
+              >
+                <IconEdit />
+                <span>重命名项目</span>
+              </button>
+              <button
+                className="context-menu-item"
+                onClick={() => {
+                  onCreateSession(contextMenu.id);
+                  setContextMenu(null);
+                }}
+              >
+                <IconPlus />
+                <span>新建会话</span>
+              </button>
+              <button
+                className="context-menu-item danger"
+                onClick={() => {
+                  setContextMenu(null);
+                  if (confirm(`确定删除项目「${contextMenu.name}」吗？这会删除该项目下的所有会话和生成记录，且无法恢复。`)) {
+                    onDeleteProject(contextMenu.id);
+                  }
+                }}
+              >
+                <IconTrash />
+                <span>删除项目</span>
+              </button>
+            </>
+          )}
         </div>
       )}
     </div>

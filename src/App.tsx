@@ -11,6 +11,7 @@ import {
   Sidebar,
 } from "./components/Sidebar";
 import { SettingsModal } from "./components/SettingsModal";
+import { ImagePreviewModal } from "./components/ImagePreviewModal";
 import { applyTheme, DEFAULT_THEME } from "./utils/themes";
 import { log } from "./utils/helpers";
 import "./App.css";
@@ -45,6 +46,39 @@ function App() {
     return saved ? Number(saved) : 300;
   });
 
+  const [previewData, setPreviewData] = useState<{ url: string; name: string } | null>(null);
+
+  const [mode, setMode] = useState<"generate" | "edit">(() => {
+    return (localStorage.getItem("kkimage_mode") as "generate" | "edit") || "generate";
+  });
+
+  const handleModeChange = useCallback((newMode: "generate" | "edit") => {
+    setMode(newMode);
+    localStorage.setItem("kkimage_mode", newMode);
+  }, []);
+
+  const handleConfirmPreviewImage = useCallback((dataUrl: string) => {
+    const newImage: ReferenceImage = {
+      id: `annotated-${Date.now()}`,
+      name: "标注图",
+      dataUrl,
+    };
+    if (mode === "edit") {
+      setReferenceImages((prev) => {
+        if (prev.length > 0) {
+          // Keep the clean original image (prev[0]), and set/replace the annotated image as the second image
+          return [prev[0], newImage];
+        }
+        return [newImage];
+      });
+    } else {
+      setReferenceImages((prev) => {
+        const filtered = prev.filter((img) => img.dataUrl !== dataUrl);
+        return [newImage, ...filtered].slice(0, 6);
+      });
+    }
+  }, [mode]);
+
   const activeSession = workspace.sessions.find((session) => session.id === activeSessionId) || null;
   const activeRecords = workspace.generations.filter((record) => record.session_id === activeSessionId);
   const latestCompletedRecord = [...activeRecords].reverse().find((record) => record.status === "completed");
@@ -56,7 +90,10 @@ function App() {
   const loadWorkspace = useCallback(async () => {
     const data = await invoke<WorkspaceSnapshot>("get_workspace");
     setWorkspace(data);
-    setActiveSessionId((current) => current || data.sessions[0]?.id || null);
+    setActiveSessionId((current) => {
+      const exists = data.sessions.some((s) => s.id === current);
+      return exists ? current : (data.sessions[0]?.id || null);
+    });
   }, []);
 
   useEffect(() => {
@@ -189,6 +226,57 @@ function App() {
     setActiveSessionId(session?.id || next.sessions[0]?.id || null);
   }, []);
 
+  const handleRenameProject = useCallback(async (id: string, name: string) => {
+    try {
+      const next = await invoke<WorkspaceSnapshot>("rename_project", { id, name });
+      setWorkspace(next);
+    } catch (err) {
+      log(`重命名项目失败: ${err}`);
+    }
+  }, []);
+
+  const handleDeleteProject = useCallback(async (id: string) => {
+    try {
+      const next = await invoke<WorkspaceSnapshot>("delete_project", { id });
+      setWorkspace(next);
+      setActiveSessionId((current) => {
+        const activeSessionBelongsToDeleted = workspace.sessions.some(
+          (s) => s.id === current && s.project_id === id
+        );
+        if (activeSessionBelongsToDeleted) {
+          return next.sessions[0]?.id || null;
+        }
+        return current;
+      });
+    } catch (err) {
+      log(`删除项目失败: ${err}`);
+    }
+  }, [workspace.sessions]);
+
+  const handleRenameSession = useCallback(async (id: string, title: string) => {
+    try {
+      const next = await invoke<WorkspaceSnapshot>("rename_session", { id, title });
+      setWorkspace(next);
+    } catch (err) {
+      log(`重命名会话失败: ${err}`);
+    }
+  }, []);
+
+  const handleDeleteSession = useCallback(async (id: string) => {
+    try {
+      const next = await invoke<WorkspaceSnapshot>("delete_session", { id });
+      setWorkspace(next);
+      setActiveSessionId((current) => {
+        if (current === id) {
+          return next.sessions[0]?.id || null;
+        }
+        return current;
+      });
+    } catch (err) {
+      log(`删除会话失败: ${err}`);
+    }
+  }, []);
+
   const handleDeleteRecord = useCallback(
     async (id: string) => {
       try {
@@ -205,8 +293,14 @@ function App() {
   );
 
   const handleAddReferenceImages = useCallback((images: ReferenceImage[]) => {
-    setReferenceImages((prev) => [...prev, ...images].slice(0, 6));
-  }, []);
+    if (mode === "edit") {
+      if (images.length > 0) {
+        setReferenceImages([images[0]]);
+      }
+    } else {
+      setReferenceImages((prev) => [...prev, ...images].slice(0, 6));
+    }
+  }, [mode]);
 
   const handleRemoveReferenceImage = useCallback((id: string) => {
     setReferenceImages((prev) => prev.filter((image) => image.id !== id));
@@ -230,6 +324,134 @@ function App() {
     document.addEventListener("mousemove", handleMouseMove);
     document.addEventListener("mouseup", handleMouseUp);
   }, [sidebarWidth]);
+
+  // 全局右键菜单状态
+  const [globalContextMenu, setGlobalContextMenu] = useState<{
+    x: number;
+    y: number;
+    targetIsInput: boolean;
+    hasSelection: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    const handleContextMenu = (e: MouseEvent) => {
+      // 禁用原生的右键菜单
+      e.preventDefault();
+
+      if (e.defaultPrevented) {
+        return;
+      }
+
+      const target = e.target as HTMLElement;
+      const targetIsInput =
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable;
+
+      const hasSelection = (window.getSelection()?.toString() || "").trim().length > 0;
+
+      setGlobalContextMenu({
+        x: e.clientX,
+        y: e.clientY,
+        targetIsInput,
+        hasSelection,
+      });
+    };
+
+    const handleClick = () => {
+      setGlobalContextMenu(null);
+    };
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        setGlobalContextMenu(null);
+      }
+    };
+
+    window.addEventListener("contextmenu", handleContextMenu);
+    window.addEventListener("click", handleClick);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("contextmenu", handleContextMenu);
+      window.removeEventListener("click", handleClick);
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, []);
+
+  const handleGlobalCopy = () => {
+    const activeEl = document.activeElement as HTMLInputElement | HTMLTextAreaElement;
+    const hasSelectionInInput =
+      activeEl &&
+      (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA") &&
+      activeEl.selectionStart !== activeEl.selectionEnd;
+
+    let textToCopy = "";
+    if (hasSelectionInInput) {
+      textToCopy = activeEl.value.substring(activeEl.selectionStart || 0, activeEl.selectionEnd || 0);
+    } else {
+      textToCopy = window.getSelection()?.toString() || "";
+    }
+
+    if (textToCopy) {
+      navigator.clipboard.writeText(textToCopy);
+    }
+    setGlobalContextMenu(null);
+  };
+
+  const handleGlobalCut = () => {
+    const activeEl = document.activeElement as HTMLInputElement | HTMLTextAreaElement;
+    if (activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA")) {
+      const start = activeEl.selectionStart || 0;
+      const end = activeEl.selectionEnd || 0;
+      const val = activeEl.value;
+      const textToCut = val.substring(start, end);
+      if (textToCut) {
+        navigator.clipboard.writeText(textToCut);
+        activeEl.value = val.slice(0, start) + val.slice(end);
+        activeEl.selectionStart = activeEl.selectionEnd = start;
+        const event = new Event("input", { bubbles: true });
+        activeEl.dispatchEvent(event);
+      }
+    }
+    setGlobalContextMenu(null);
+  };
+
+  const handleGlobalPaste = async () => {
+    try {
+      const text = await navigator.clipboard.readText();
+      const activeEl = document.activeElement as HTMLInputElement | HTMLTextAreaElement;
+      if (activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA")) {
+        const start = activeEl.selectionStart || 0;
+        const end = activeEl.selectionEnd || 0;
+        const val = activeEl.value;
+        activeEl.value = val.slice(0, start) + text + val.slice(end);
+        activeEl.selectionStart = activeEl.selectionEnd = start + text.length;
+        const event = new Event("input", { bubbles: true });
+        activeEl.dispatchEvent(event);
+      }
+    } catch (err) {
+      console.error("粘贴失败", err);
+    }
+    setGlobalContextMenu(null);
+  };
+
+  const handleGlobalSelectAll = () => {
+    const activeEl = document.activeElement as HTMLInputElement | HTMLTextAreaElement;
+    if (activeEl && (activeEl.tagName === "INPUT" || activeEl.tagName === "TEXTAREA")) {
+      activeEl.select();
+    } else {
+      const selection = window.getSelection();
+      const range = document.createRange();
+      range.selectNodeContents(document.body);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    }
+    setGlobalContextMenu(null);
+  };
+
+  const handleGlobalRefresh = () => {
+    window.location.reload();
+  };
 
   return (
     <div className="app-container">
@@ -280,6 +502,10 @@ function App() {
           onSelectSession={setActiveSessionId}
           onCreateProject={handleCreateProject}
           onCreateSession={handleCreateSession}
+          onRenameProject={handleRenameProject}
+          onDeleteProject={handleDeleteProject}
+          onRenameSession={handleRenameSession}
+          onDeleteSession={handleDeleteSession}
           collapsed={sidebarCollapsed}
           onToggleCollapse={() => setSidebarCollapsed((value) => !value)}
           width={sidebarWidth}
@@ -294,6 +520,7 @@ function App() {
             defaultZoom={defaultZoom}
             onDelete={handleDeleteRecord}
             onAddReferenceImage={(image) => handleAddReferenceImages([image])}
+            onPreviewImage={(url, name) => setPreviewData({ url, name })}
           />
 
           <GeneratePanel
@@ -305,6 +532,9 @@ function App() {
             onAddReferenceImages={handleAddReferenceImages}
             onRemoveReferenceImage={handleRemoveReferenceImage}
             onClearReferenceImages={() => setReferenceImages([])}
+            onPreviewImage={(url, name) => setPreviewData({ url, name })}
+            mode={mode}
+            onModeChange={handleModeChange}
           />
         </div>
       </div>
@@ -317,6 +547,67 @@ function App() {
         defaultZoom={defaultZoom}
         onDefaultZoomChange={setDefaultZoom}
       />
+
+      {globalContextMenu && (
+        <div
+          className="context-menu"
+          style={{ top: globalContextMenu.y, left: globalContextMenu.x }}
+          onClick={(e) => e.stopPropagation()}
+        >
+          {globalContextMenu.targetIsInput ? (
+            <>
+              <button
+                className="context-menu-item"
+                onClick={handleGlobalCut}
+                disabled={!globalContextMenu.hasSelection}
+              >
+                剪切
+              </button>
+              <button
+                className="context-menu-item"
+                onClick={handleGlobalCopy}
+                disabled={!globalContextMenu.hasSelection}
+              >
+                复制
+              </button>
+              <button className="context-menu-item" onClick={handleGlobalPaste}>
+                粘贴
+              </button>
+              <div className="settings-divider" style={{ margin: "4px 0" }} />
+              <button className="context-menu-item" onClick={handleGlobalSelectAll}>
+                全选
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                className="context-menu-item"
+                onClick={handleGlobalCopy}
+                disabled={!globalContextMenu.hasSelection}
+              >
+                复制
+              </button>
+              <button className="context-menu-item" onClick={handleGlobalSelectAll}>
+                全选
+              </button>
+              <div className="settings-divider" style={{ margin: "4px 0" }} />
+              <button className="context-menu-item" onClick={handleGlobalRefresh}>
+                刷新页面
+              </button>
+            </>
+          )}
+        </div>
+      )}
+
+      {previewData && (
+        <ImagePreviewModal
+          isOpen={!!previewData}
+          imageUrl={previewData.url}
+          imageName={previewData.name}
+          onClose={() => setPreviewData(null)}
+          onConfirm={handleConfirmPreviewImage}
+        />
+      )}
     </div>
   );
 }

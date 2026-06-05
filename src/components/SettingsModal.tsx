@@ -66,6 +66,21 @@ export function SettingsModal({
       .catch(() => {});
   }, [isOpen, onDefaultZoomChange]);
 
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+      }
+    };
+    if (isOpen) {
+      window.addEventListener("keydown", handleKeyDown);
+    }
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isOpen, onClose]);
+
+
   const handleSaveApiKey = async () => {
     await invoke("save_setting", { key: "api_key", value: apiKey });
     await invoke("save_setting", { key: "base_url", value: baseUrl });

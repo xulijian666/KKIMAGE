@@ -46,6 +46,54 @@ fn create_session(
 }
 
 #[tauri::command]
+fn rename_project(
+    state: tauri::State<AppState>,
+    id: String,
+    name: String,
+) -> Result<WorkspaceSnapshot, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::rename_project(&conn, &id, &name).map_err(|e| e.to_string())?;
+    db::get_workspace(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_project(
+    state: tauri::State<AppState>,
+    id: String,
+) -> Result<WorkspaceSnapshot, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let paths = db::delete_project(&conn, &id).map_err(|e| e.to_string())?;
+    for path in paths {
+        let _ = std::fs::remove_file(path);
+    }
+    db::get_workspace(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn rename_session(
+    state: tauri::State<AppState>,
+    id: String,
+    title: String,
+) -> Result<WorkspaceSnapshot, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    db::rename_session(&conn, &id, &title).map_err(|e| e.to_string())?;
+    db::get_workspace(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn delete_session(
+    state: tauri::State<AppState>,
+    id: String,
+) -> Result<WorkspaceSnapshot, String> {
+    let conn = state.db.lock().map_err(|e| e.to_string())?;
+    let paths = db::delete_session(&conn, &id).map_err(|e| e.to_string())?;
+    for path in paths {
+        let _ = std::fs::remove_file(path);
+    }
+    db::get_workspace(&conn).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 fn delete_generation(state: tauri::State<AppState>, id: String) -> Result<(), String> {
     let conn = state.db.lock().map_err(|e| e.to_string())?;
 
@@ -296,6 +344,10 @@ pub fn run() {
             get_generations,
             create_project,
             create_session,
+            rename_project,
+            delete_project,
+            rename_session,
+            delete_session,
             delete_generation,
             clear_generations,
             generate_image,
@@ -311,3 +363,4 @@ pub fn run() {
         .run(tauri::generate_context!())
         .expect("运行 KKIMAGE 应用失败");
 }
+

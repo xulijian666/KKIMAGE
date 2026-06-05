@@ -5,7 +5,7 @@
   "identifier": "com.kkimage.app",
   "build": {
     "frontendDist": "../dist",
-    "devUrl": "http://localhost:16889",
+    "devUrl": "http://127.0.0.1:1420",
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build"
   },

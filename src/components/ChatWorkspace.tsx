@@ -14,6 +14,7 @@ interface ChatWorkspaceProps {
   defaultZoom: number;
   onDelete: (id: string) => void;
   onAddReferenceImage: (image: ReferenceImage) => void;
+  onPreviewImage: (url: string, name: string) => void;
 }
 
 const imageCache = new Map<string, string>();
@@ -85,39 +86,13 @@ function copyDataUrlToClipboard(dataUrl: string) {
     .then((blob) => navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]));
 }
 
-function cropDataUrl(
-  dataUrl: string,
-  imageEl: HTMLImageElement,
-  selection: { x: number; y: number; width: number; height: number }
-) {
-  const scaleX = imageEl.naturalWidth / imageEl.clientWidth;
-  const scaleY = imageEl.naturalHeight / imageEl.clientHeight;
-  const canvas = document.createElement("canvas");
-  canvas.width = Math.max(1, Math.round(selection.width * scaleX));
-  canvas.height = Math.max(1, Math.round(selection.height * scaleY));
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return "";
-  ctx.drawImage(
-    imageEl,
-    selection.x * scaleX,
-    selection.y * scaleY,
-    selection.width * scaleX,
-    selection.height * scaleY,
-    0,
-    0,
-    canvas.width,
-    canvas.height
-  );
-  return canvas.toDataURL("image/png");
-}
-
 function ImageCard({
   record,
   onPreview,
   onContextMenu,
 }: {
   record: GenerationRecord;
-  onPreview: (record: GenerationRecord, selectMode?: boolean) => void;
+  onPreview: (record: GenerationRecord) => void;
   onContextMenu: (event: React.MouseEvent, record: GenerationRecord) => void;
 }) {
   const dataUrl = useImageDataUrl(record.image_path);
@@ -157,29 +132,25 @@ export function ChatWorkspace({
   defaultZoom,
   onDelete,
   onAddReferenceImage,
+  onPreviewImage,
 }: ChatWorkspaceProps) {
-  const [preview, setPreview] = useState<{ record: GenerationRecord; selectMode: boolean } | null>(null);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; record: GenerationRecord } | null>(null);
-  const [zoom, setZoom] = useState(defaultZoom);
-  const [dragStart, setDragStart] = useState<{ x: number; y: number } | null>(null);
-  const [selection, setSelection] = useState<{ x: number; y: number; width: number; height: number } | null>(null);
-  const imageRef = useRef<HTMLImageElement>(null);
   const scrollerRef = useRef<HTMLDivElement>(null);
-  const previewDataUrl = useImageDataUrl(preview?.record.image_path || null);
 
   useEffect(() => {
     scrollerRef.current?.scrollTo({ top: scrollerRef.current.scrollHeight });
   }, [records.length, session?.id]);
 
-  useEffect(() => {
-    setZoom(defaultZoom);
-    setSelection(null);
-    setDragStart(null);
-  }, [defaultZoom, preview?.record.id]);
-
-  const openPreview = (record: GenerationRecord, selectMode = false) => {
-    setPreview({ record, selectMode });
+  const openPreview = async (record: GenerationRecord) => {
     setContextMenu(null);
+    if (!record.image_path) return;
+    try {
+      const dataUrl = imageCache.get(record.image_path) || (await invoke<string>("get_image_data_url", { imagePath: record.image_path }));
+      imageCache.set(record.image_path, dataUrl);
+      onPreviewImage(dataUrl, record.prompt || "生成图");
+    } catch (e) {
+      console.error("加载预览图失败:", e);
+    }
   };
 
   const handleImageContextMenu = (event: React.MouseEvent, record: GenerationRecord) => {
@@ -207,57 +178,6 @@ export function ChatWorkspace({
     imageCache.set(record.image_path, dataUrl);
     onAddReferenceImage({ id: createId(), name: "当前图", dataUrl });
     setContextMenu(null);
-  };
-
-  const handleWheel = (event: React.WheelEvent) => {
-    event.preventDefault();
-    setZoom((current) => Math.min(12, Math.max(0.1, current * Math.exp(-event.deltaY * 0.0015))));
-  };
-
-  const localPoint = (event: React.MouseEvent) => {
-    const rect = imageRef.current?.getBoundingClientRect();
-    if (!rect) return null;
-    return {
-      x: Math.max(0, Math.min(rect.width, event.clientX - rect.left)),
-      y: Math.max(0, Math.min(rect.height, event.clientY - rect.top)),
-    };
-  };
-
-  const handleMouseDown = (event: React.MouseEvent) => {
-    if (!preview?.selectMode) return;
-    const point = localPoint(event);
-    if (!point) return;
-    setDragStart(point);
-    setSelection({ x: point.x, y: point.y, width: 0, height: 0 });
-  };
-
-  const handleMouseMove = (event: React.MouseEvent) => {
-    if (!preview?.selectMode || !dragStart) return;
-    const point = localPoint(event);
-    if (!point) return;
-    setSelection({
-      x: Math.min(dragStart.x, point.x),
-      y: Math.min(dragStart.y, point.y),
-      width: Math.abs(point.x - dragStart.x),
-      height: Math.abs(point.y - dragStart.y),
-    });
-  };
-
-  const handleMouseUp = () => {
-    if (!preview?.selectMode || !selection || !imageRef.current || !previewDataUrl) {
-      setDragStart(null);
-      return;
-    }
-
-    if (selection.width > 8 && selection.height > 8) {
-      const dataUrl = cropDataUrl(previewDataUrl, imageRef.current, selection);
-      if (dataUrl) {
-        onAddReferenceImage({ id: createId(), name: "框选区域", dataUrl });
-        setPreview(null);
-      }
-    }
-
-    setDragStart(null);
   };
 
   return (
@@ -304,64 +224,12 @@ export function ChatWorkspace({
           <button className="context-menu-item" onClick={() => handleSaveAs(contextMenu.record)}>
             另存为
           </button>
-          <button className="context-menu-item" onClick={() => openPreview(contextMenu.record, true)}>
-            框选为上下文
-          </button>
           <button className="context-menu-item" onClick={() => handleUseAsReference(contextMenu.record)}>
             引用当前图
           </button>
           <button className="context-menu-item danger" onClick={() => onDelete(contextMenu.record.id)}>
             删除
           </button>
-        </div>
-      )}
-
-      {preview && (
-        <div className="preview-overlay" onClick={() => setPreview(null)}>
-          <div className="preview-shell" onClick={(event) => event.stopPropagation()}>
-            <div className="preview-toolbar">
-              <span>{Math.round(zoom * 100)}%</span>
-              <div className="preview-toolbar-actions">
-                <button className="btn-tool" onClick={() => handleUseAsReference(preview.record)}>
-                  引用
-                </button>
-                <button className="btn-tool" onClick={() => handleSaveAs(preview.record)}>
-                  <IconDownload />
-                  另存为
-                </button>
-                <button className="btn-icon" onClick={() => setPreview(null)}>
-                  <IconX />
-                </button>
-              </div>
-            </div>
-
-            <div className={`preview-stage ${preview.selectMode ? "selecting" : ""}`} onWheel={handleWheel}>
-              {previewDataUrl && (
-                <div
-                  className="preview-image-wrap"
-                  style={{ transform: `scale(${zoom})` }}
-                  onMouseDown={handleMouseDown}
-                  onMouseMove={handleMouseMove}
-                  onMouseUp={handleMouseUp}
-                >
-                  <img ref={imageRef} src={previewDataUrl} alt={preview.record.prompt} draggable={false} />
-                  {selection && preview.selectMode && (
-                    <div
-                      className="selection-box"
-                      style={{
-                        left: selection.x,
-                        top: selection.y,
-                        width: selection.width,
-                        height: selection.height,
-                      }}
-                    />
-                  )}
-                </div>
-              )}
-            </div>
-
-            {preview.selectMode && <div className="selection-hint">拖拽框选区域，松开后自动加入输入框上下文</div>}
-          </div>
         </div>
       )}
     </div>
