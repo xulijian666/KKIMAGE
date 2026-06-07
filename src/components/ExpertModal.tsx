@@ -1,10 +1,24 @@
 import { useEffect, useState } from "react";
+import { BUILTIN_EXPERTS } from "../utils/defaultExperts";
+
+// ========================
+// Types
+// ========================
 
 export interface StylePreset {
   id: string;
   name: string;
   prompt: string;
   isDefault?: boolean;
+}
+
+export interface ExpertDef {
+  id: string;
+  name: string;
+  description: string;
+  isBuiltIn: boolean;
+  basePrompt: string;
+  styles: StylePreset[];
 }
 
 export interface ExpertConfig {
@@ -15,102 +29,185 @@ export interface ExpertConfig {
 interface ExpertModalProps {
   isOpen: boolean;
   onClose: () => void;
-  config: ExpertConfig;
-  onSave: (config: ExpertConfig) => void;
+  experts: ExpertDef[];
+  activeExpertId: string;
+  onSave: (experts: ExpertDef[], activeStyleId: string) => void;
 }
 
-const BLUE_PROMPT = `绘制一个标准的专业图表，整体设计要求与微软 VISIO 风格保持高度一致。
+// Built-in experts are imported from ../utils/defaultExperts
 
-【核心排版逻辑与连线规范】
-1. 必须完全、精准地遵循输入的 Mermaid 代码所定义的节点、顺序、交互角色和连线逻辑，确保最终渲染的图示连线、拓扑关系、流转路径与输入的 Mermaid 源码完全一致，绝无遗漏、多余、反向或篡改。
-2. 如果是流程图：
-   - 连接线必须是水平或垂直的直角折线（Orthogonal lines），严禁斜线、弧线或交叉重叠的无序曲线。
-   - 线条末端必须有清晰锐利的标准指向箭头，确保指向正确的下游节点。
-   - 起止节点统一为圆角矩形，普通步骤为直角矩形，条件判断为标准菱形。
-3. 如果是时序图：
-   - 参与者/对象方框在顶部横向排齐对齐，下方延伸出垂直虚线作为生命线（Lifelines）。
-   - 交互消息传递线使用带箭头的水平线（实线为请求/调用，虚线为返回/答复），线段必须完全水平，严禁倾斜。
-   - 生命线上的激活矩形块（Activation boxes）定位必须精准，长度和时间范围严格吻合。
-   
-【文字与可读性要求】
-1. 所有文本内容（包括节点文字、连线标签、参与者名称）必须极其清晰、高分辨率、高对比度、极其易读。
-2. 严禁出现拼写混乱、字符丢失、模糊、边缘毛糙或文字与节点/连线重叠的情况。
-3. 文字使用标准的扁平化无衬线系统字体（如 Arial 或 Segoe UI），在节点或线条上方居中对齐，大小适中。
+export function loadExperts(): ExpertDef[] {
+  try {
+    // Check version for migration
+    const version = localStorage.getItem("kkimage_expert_version");
+    if (version !== "v2") {
+      const stored = localStorage.getItem("kkimage_experts");
+      let custom: ExpertDef[] = [];
+      if (stored) {
+        try {
+          custom = JSON.parse(stored) as ExpertDef[];
+        } catch (e) {
+          custom = [];
+        }
+      }
 
-【色彩与平面视觉风格】
-1. 呈现极简、高端的 2D 扁平图表风格，严禁任何三维 3D 渲染、写实插图或杂乱的渐变阴影。
-2. 背景必须是纯白底，提供最干净的阅读体验。
-3. 节点填充颜色使用低饱和度的经典 VISIO 浅蓝色（例如 HSL 210, 80%, 90%），边框为深蓝色，文字为黑色或深灰色。
-4. 严禁使用任何 Emoji 表情符号或无意义的图标点缀。`;
+      const migratedCustom: ExpertDef[] = [];
 
-const GRAY_PROMPT = `绘制一个标准的专业图表，整体设计要求与微软 VISIO 风格保持高度一致。
+      // Collect custom styles from old 'visio' and 'arch' experts
+      const oldVisio = custom.find(e => e.id === "visio");
+      const oldArch = custom.find(e => e.id === "arch");
 
-【核心排版逻辑与连线规范】
-1. 必须完全、精准地遵循输入的 Mermaid 代码所定义的节点、顺序、交互角色和连线逻辑，确保最终渲染的图示连线、拓扑关系、流转路径与输入的 Mermaid 源码完全一致，绝无遗漏、多余、反向或篡改。
-2. 如果是流程图：
-   - 连接线必须是水平或垂直的直角折线（Orthogonal lines），严禁斜线、弧线或交叉重叠的无序曲线。
-   - 线条末端必须有清晰锐利的标准指向箭头，确保指向正确的下游节点。
-   - 起止节点统一为圆角矩形，普通步骤为直角矩形，条件判断为标准菱形。
-3. 如果是时序图：
-   - 参与者/对象方框在顶部横向排齐对齐，下方延伸出垂直虚线作为生命线（Lifelines）。
-   - 交互消息传递线使用带箭头的水平线（实线为请求/调用，虚线为返回/答复），线段必须完全水平，严禁倾斜。
-   - 生命线上的激活矩形块（Activation boxes）定位必须精准，长度和时间范围严格吻合。
-   
-【文字与可读性要求】
-1. 所有文本内容（包括节点文字、连线标签、参与者名称）必须极其清晰、高分辨率、高对比度、极其易读。
-2. 严禁出现拼写混乱、字符丢失、模糊、边缘毛糙或文字与节点/连线重叠的情况。
-3. 文字使用标准的扁平化无衬线系统字体（如 Arial 或 Segoe UI），在节点或线条上方居中对齐，大小适中。
+      if (oldVisio) {
+        const customStyles = oldVisio.styles.filter(s => !s.isDefault);
+        if (customStyles.length > 0) {
+          migratedCustom.push({
+            id: "flowchart",
+            name: "流程图/泳道图专家",
+            description: "",
+            isBuiltIn: true,
+            basePrompt: "",
+            styles: customStyles
+          });
+        }
+      }
 
-【色彩与平面视觉风格】
-1. 呈现极简、高端的 2D 扁平图表风格，严禁任何三维 3D 渲染、写实插图或杂乱的渐变阴影。
-2. 背景必须是纯白底，提供最干净的阅读体验。
-3. 节点填充颜色使用低饱和度的商务科技灰色（例如 HSL 0, 0%, 92%），边框为深灰色，文字为黑色。
-4. 严禁使用任何 Emoji 表情符号或无意义的图标点缀。`;
+      if (oldArch) {
+        const customStyles = oldArch.styles.filter(s => !s.isDefault);
+        if (customStyles.length > 0) {
+          migratedCustom.push({
+            id: "arch",
+            name: "系统架构图专家",
+            description: "",
+            isBuiltIn: true,
+            basePrompt: "",
+            styles: customStyles
+          });
+        }
+      }
 
-const BW_PROMPT = `绘制一个标准的专业图表，整体设计要求与微软 VISIO 风格保持高度一致。
+      // Keep other custom experts
+      for (const e of custom) {
+        if (e.id !== "visio" && e.id !== "arch" && !e.isBuiltIn) {
+          migratedCustom.push(e);
+        }
+      }
 
-【核心排版逻辑与连线规范】
-1. 必须完全、精准地遵循输入的 Mermaid 代码所定义的节点、顺序、交互角色和连线逻辑，确保最终渲染的图示连线、拓扑关系、流转路径与输入的 Mermaid 源码完全一致，绝无遗漏、多余、反向或篡改。
-2. 如果是流程图：
-   - 连接线必须是水平或垂直的直角折线（Orthogonal lines），严禁斜线、弧线或交叉重叠的无序曲线。
-   - 线条末端必须有清晰锐利的标准指向箭头，确保指向正确的下游节点。
-   - 起止节点统一为圆角矩形，普通步骤为直角矩形，条件判断为标准菱形。
-3. 如果是时序图：
-   - 参与者/对象方框在顶部横向排齐对齐，下方延伸出垂直虚线作为生命线（Lifelines）。
-   - 交互消息传递线使用带箭头的水平线（实线为请求/调用，虚线为返回/答复），线段必须完全水平，严禁倾斜。
-   - 生命线上的激活矩形块（Activation boxes）定位必须精准，长度和时间范围严格吻合。
-   
-【文字与可读性要求】
-1. 所有文本内容（包括节点文字、连线标签、参与者名称）必须极其清晰、高分辨率、高对比度、极其易读。
-2. 严禁出现拼写混乱、字符丢失、模糊、边缘毛糙或文字与节点/连线重叠的情况。
-3. 文字使用标准的扁平化无衬线系统字体（如 Arial 或 Segoe UI），在节点或线条上方居中对齐，大小适中。
+      // Save migrated custom experts
+      localStorage.setItem("kkimage_experts", JSON.stringify(migratedCustom));
+      localStorage.setItem("kkimage_expert_version", "v2");
 
-【色彩与平面视觉风格】
-1. 呈现极简、高端的 2D 扁平图表风格，严禁任何三维 3D 渲染、写实插图或杂乱的渐变阴影。
-2. 背景必须是纯白底，提供最干净的阅读体验。
-3. 节点填充为纯白色背景（无填充），搭配细黑边框，文字为纯黑色。
-4. 严禁使用任何 Emoji 表情符号或无意义的图标点缀。`;
+      // Reset active selections to prevent loading invalid IDs
+      localStorage.setItem("kkimage_active_expert", "flowchart");
+      localStorage.setItem("kkimage_active_style_id", "classic-blue");
 
-const DEFAULT_STYLES: StylePreset[] = [
-  {
-    id: "blue",
-    name: "微软经典蓝 (Classic Blue)",
-    prompt: BLUE_PROMPT,
-    isDefault: true,
-  },
-  {
-    id: "gray",
-    name: "商务科技灰 (Tech Gray)",
-    prompt: GRAY_PROMPT,
-    isDefault: true,
-  },
-  {
-    id: "bw",
-    name: "极简黑白 (Black & White)",
-    prompt: BW_PROMPT,
-    isDefault: true,
-  },
-];
+      return mergeExperts(BUILTIN_EXPERTS, migratedCustom);
+    }
+
+    const stored = localStorage.getItem("kkimage_experts");
+    if (stored) {
+      const custom = JSON.parse(stored) as ExpertDef[];
+      const migratedCustom = custom.map(e => ({
+        ...e,
+        basePrompt: e.basePrompt || ""
+      }));
+      return mergeExperts(BUILTIN_EXPERTS, migratedCustom);
+    }
+
+    // Migration from old format
+    const oldConfig = localStorage.getItem("kkimage_expert_config");
+    if (oldConfig) {
+      const parsed = JSON.parse(oldConfig);
+      const migrated: ExpertDef[] = JSON.parse(JSON.stringify(BUILTIN_EXPERTS));
+      // Add non-default styles from old config as custom styles to VISIO
+      if (parsed.styles) {
+        const flowchart = migrated.find((e) => e.id === "flowchart")!;
+        for (const s of parsed.styles) {
+          if (!s.isDefault) {
+            flowchart.styles.push({ ...s, isDefault: false });
+          }
+        }
+      }
+      localStorage.setItem("kkimage_experts", JSON.stringify(stripBuiltins(migrated)));
+      localStorage.removeItem("kkimage_expert_config");
+      localStorage.setItem("kkimage_expert_version", "v2");
+      return migrated;
+    }
+  } catch (e) {
+    console.error("Failed to load experts:", e);
+  }
+  return JSON.parse(JSON.stringify(BUILTIN_EXPERTS));
+}
+
+export function saveExperts(experts: ExpertDef[]) {
+  try {
+    localStorage.setItem("kkimage_experts", JSON.stringify(stripBuiltins(experts)));
+  } catch (e) {
+    console.error("Failed to save experts:", e);
+  }
+}
+
+/** Strip default styles and base prompts from built-in experts if they are unmodified, to keep JSON size small */
+function stripBuiltins(experts: ExpertDef[]): ExpertDef[] {
+  return experts.map((e) => {
+    if (e.isBuiltIn) {
+      const builtinExpert = BUILTIN_EXPERTS.find((be) => be.id === e.id);
+      const stylesToSave = e.styles.filter((s) => {
+        if (!s.isDefault) return true; // Always save custom styles
+        const builtinStyle = builtinExpert?.styles.find((bs) => bs.id === s.id);
+        if (!builtinStyle) return false;
+        // Only save default style if it has been modified
+        return s.prompt !== builtinStyle.prompt || s.name !== builtinStyle.name;
+      });
+      return {
+        ...e,
+        basePrompt: e.basePrompt === builtinExpert?.basePrompt ? "" : e.basePrompt,
+        styles: stylesToSave,
+      };
+    }
+    return e;
+  });
+}
+
+/** Merge built-in experts (with full default styles) + stored custom data */
+function mergeExperts(builtins: ExpertDef[], stored: ExpertDef[]): ExpertDef[] {
+  const result: ExpertDef[] = JSON.parse(JSON.stringify(builtins));
+  for (const s of stored) {
+    const existing = result.find((e) => e.id === s.id);
+    if (existing && existing.isBuiltIn) {
+      // Restore customized basePrompt if it was modified
+      if (s.basePrompt) {
+        existing.basePrompt = s.basePrompt;
+      }
+      // Merge styles
+      for (const style of s.styles) {
+        const existingStyle = existing.styles.find((es) => es.id === style.id);
+        if (existingStyle) {
+          // If style exists (meaning it's a default style), update with customized values
+          existingStyle.prompt = style.prompt;
+          existingStyle.name = style.name;
+        } else {
+          // Custom style
+          existing.styles.push(style);
+        }
+      }
+    } else if (!existing) {
+      // Custom expert
+      result.push({
+        ...s,
+        basePrompt: s.basePrompt || "",
+      });
+    }
+  }
+  return result;
+}
+
+export function getExpertById(experts: ExpertDef[], id: string): ExpertDef | undefined {
+  return experts.find((e) => e.id === id);
+}
+
+// ========================
+// SVG Icons
+// ========================
 
 const IconX = () => (
   <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -133,76 +230,187 @@ const IconTrash = () => (
   </svg>
 );
 
-export function ExpertModal({ isOpen, onClose, config, onSave }: ExpertModalProps) {
-  const [styles, setStyles] = useState<StylePreset[]>([]);
-  const [activeStyleId, setActiveStyleId] = useState<string>("blue");
+const IconLock = () => (
+  <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="3" y="11" width="18" height="11" rx="2" ry="2" />
+    <path d="M7 11V7a5 5 0 0110 0v4" />
+  </svg>
+);
 
-  // Sync state with config prop when opened
+// ========================
+// Hint text per expert type
+// ========================
+
+function getHintForExpert(expert: ExpertDef): string {
+  if (expert.id === "flowchart") {
+    return "在下方编辑框配置流程图/泳道图排版规则。生成时将与视觉流派和 Mermaid 代码合并。";
+  }
+  if (expert.id === "sequence") {
+    return "在下方编辑框配置时序图排版规则。生成时将与视觉流派和 Mermaid 代码合并。";
+  }
+  if (expert.id === "arch") {
+    return "在下方编辑框配置系统架构图排版规则。生成时将与视觉流派和 Mermaid 代码合并。";
+  }
+  if (expert.id === "ppt") {
+    return "在下方编辑框配置 PPT 页面排版规则。生成时将与视觉流派和 Mermaid 代码合并。";
+  }
+  return "在下方编辑框配置图表基础排版规则。生成时将与选择的视觉流派和 Mermaid 代码合并。";
+}
+
+// ========================
+// Component
+// ========================
+
+export function ExpertModal({ isOpen, onClose, experts, activeExpertId, onSave }: ExpertModalProps) {
+  const [localExperts, setLocalExperts] = useState<ExpertDef[]>([]);
+  const [selectedExpertId, setSelectedExpertId] = useState<string>(activeExpertId);
+  const [activeStyleId, setActiveStyleId] = useState<string>("");
+  const [showCreateDialog, setShowCreateDialog] = useState(false);
+  const [newExpertName, setNewExpertName] = useState("");
+  const [newExpertDesc, setNewExpertDesc] = useState("");
+
+  // Sync state when opened
   useEffect(() => {
     if (isOpen) {
-      const initialStyles = config.styles && config.styles.length > 0 ? config.styles : DEFAULT_STYLES;
-      setStyles(initialStyles);
-      setActiveStyleId(config.activeStyleId || initialStyles[0].id);
+      setLocalExperts(JSON.parse(JSON.stringify(experts)));
+      setSelectedExpertId(activeExpertId || experts[0]?.id || "flowchart");
+      const expert = experts.find((e) => e.id === (activeExpertId || experts[0]?.id));
+      setActiveStyleId(expert?.styles[0]?.id || "");
+      setShowCreateDialog(false);
     }
-  }, [config, isOpen]);
+  }, [experts, activeExpertId, isOpen]);
 
-  // Handle ESC closing
   useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") {
-        onClose();
-      }
-    };
-    if (isOpen) {
-      window.addEventListener("keydown", handleKeyDown);
-    }
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-    };
+    if (!isOpen) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
   }, [isOpen, onClose]);
 
-  const activeStyle = styles.find((s) => s.id === activeStyleId) || styles[0];
+  const selectedExpert = localExperts.find((e) => e.id === selectedExpertId) || localExperts[0];
+  const activeStyle = selectedExpert?.styles.find((s) => s.id === activeStyleId) || selectedExpert?.styles[0];
 
-  const handleNameChange = (name: string) => {
-    setStyles((prev) => prev.map((s) => (s.id === activeStyleId ? { ...s, name } : s)));
+  // Auto-select first style when expert changes
+  useEffect(() => {
+    if (selectedExpert && selectedExpert.styles.length > 0) {
+      if (!selectedExpert.styles.find((s) => s.id === activeStyleId)) {
+        setActiveStyleId(selectedExpert.styles[0].id);
+      }
+    }
+  }, [selectedExpertId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const handleStyleNameChange = (name: string) => {
+    setLocalExperts((prev) =>
+      prev.map((e) =>
+        e.id === selectedExpertId
+          ? { ...e, styles: e.styles.map((s) => (s.id === activeStyleId ? { ...s, name } : s)) }
+          : e
+      )
+    );
   };
 
-  const handlePromptChange = (prompt: string) => {
-    setStyles((prev) => prev.map((s) => (s.id === activeStyleId ? { ...s, prompt } : s)));
+  const handleStylePromptChange = (prompt: string) => {
+    setLocalExperts((prev) =>
+      prev.map((e) =>
+        e.id === selectedExpertId
+          ? { ...e, styles: e.styles.map((s) => (s.id === activeStyleId ? { ...s, prompt } : s)) }
+          : e
+      )
+    );
   };
 
   const handleAddStyle = () => {
     const newId = crypto.randomUUID?.() ?? `style-${Date.now()}-${Math.random()}`;
     const newStyle: StylePreset = {
       id: newId,
-      name: "自定义图表风格",
-      prompt: `绘制一个标准的专业图表，整体设计要求与微软 VISIO 风格保持高度一致。
-
-【核心排版逻辑与连线规范】
-1. 必须完全、精准地遵循输入的 Mermaid 代码所定义的节点、顺序、交互角色和连线逻辑，确保最终关系与源码完全一致。
-2. 连线必须是水平或垂直的直角折线，文字必须清晰易读。`,
+      name: "自定义流派",
+      prompt: `请输入自定义的生图提示词，引导 AI 按照您期望的风格生成图像。`,
       isDefault: false,
     };
-    setStyles((prev) => [...prev, newStyle]);
+    setLocalExperts((prev) =>
+      prev.map((e) =>
+        e.id === selectedExpertId ? { ...e, styles: [...e.styles, newStyle] } : e
+      )
+    );
     setActiveStyleId(newId);
   };
 
   const handleDeleteStyle = (e: React.MouseEvent, idToDelete: string) => {
     e.stopPropagation();
-    if (confirm("确定删除这个自定义风格吗？")) {
-      const filtered = styles.filter((s) => s.id !== idToDelete);
-      setStyles(filtered);
+    if (confirm("确定删除这个自定义流派吗？")) {
+      setLocalExperts((prev) =>
+        prev.map((exp) =>
+          exp.id === selectedExpertId
+            ? { ...exp, styles: exp.styles.filter((s) => s.id !== idToDelete) }
+            : exp
+        )
+      );
       if (activeStyleId === idToDelete) {
-        setActiveStyleId(filtered[0]?.id || "blue");
+        const remaining = selectedExpert?.styles.filter((s) => s.id !== idToDelete);
+        setActiveStyleId(remaining?.[0]?.id || "");
       }
     }
   };
 
+  const handleCreateExpert = () => {
+    if (!newExpertName.trim()) return;
+    const newId = crypto.randomUUID?.() ?? `expert-${Date.now()}-${Math.random()}`;
+    const defaultStyleId = crypto.randomUUID?.() ?? `style-${Date.now()}`;
+    const newExpert: ExpertDef = {
+      id: newId,
+      name: newExpertName.trim(),
+      description: newExpertDesc.trim() || "自定义专家",
+      isBuiltIn: false,
+      basePrompt: "请输入自定义图表类型的排版对齐与连线规范...",
+      styles: [
+        {
+          id: defaultStyleId,
+          name: "默认流派",
+          prompt: "请输入自定义的色彩与视觉流派提示词...",
+          isDefault: false,
+        },
+      ],
+    };
+    setLocalExperts((prev) => [...prev, newExpert]);
+    setSelectedExpertId(newId);
+    setActiveStyleId(defaultStyleId);
+    setShowCreateDialog(false);
+    setNewExpertName("");
+    setNewExpertDesc("");
+  };
+
+  const handleDeleteExpert = (e: React.MouseEvent, idToDelete: string) => {
+    e.stopPropagation();
+    const expert = localExperts.find((x) => x.id === idToDelete);
+    if (!expert || expert.isBuiltIn) return;
+    if (confirm(`确定删除专家「${expert.name}」及其所有流派吗？`)) {
+      const filtered = localExperts.filter((x) => x.id !== idToDelete);
+      setLocalExperts(filtered);
+      if (selectedExpertId === idToDelete) {
+        setSelectedExpertId(filtered[0]?.id || "flowchart");
+      }
+    }
+  };
+
+  const handleRestoreDefaults = () => {
+    if (confirm("确定要恢复默认预置提示词吗？这将覆盖您对内置专家和流派的修改。")) {
+      const freshBuiltins = JSON.parse(JSON.stringify(BUILTIN_EXPERTS));
+      const customOnly = localExperts.filter((e) => !e.isBuiltIn);
+      const resetList = [...freshBuiltins, ...customOnly];
+      
+      setLocalExperts(resetList);
+      
+      // If the currently selected expert is no longer in the list, fallback
+      if (!resetList.some((e) => e.id === selectedExpertId)) {
+        setSelectedExpertId(resetList[0]?.id || "flowchart");
+      }
+      
+      alert("已恢复默认提示词（点击下方“应用并保存”后正式生效）");
+    }
+  };
+
   const handleSave = () => {
-    onSave({
-      activeStyleId,
-      styles,
-    });
+    onSave(localExperts, activeStyleId || "");
     onClose();
   };
 
@@ -219,19 +427,50 @@ export function ExpertModal({ isOpen, onClose, config, onSave }: ExpertModalProp
         </div>
 
         <div className="expert-body">
-          {/* 左侧栏：专家类别 */}
+          {/* Left sidebar: expert list */}
           <div className="expert-sidebar">
-            <div className="expert-sidebar-item active">VISIO图专家</div>
-            <div className="expert-sidebar-item disabled" title="更多专家敬请期待">
-              更多专家...
-            </div>
+            {localExperts.map((expert) => (
+              <div
+                key={expert.id}
+                className={`expert-sidebar-item ${selectedExpertId === expert.id ? "active" : ""}`}
+                onClick={() => setSelectedExpertId(expert.id)}
+              >
+                <span style={{ display: "flex", alignItems: "center", gap: "4px", flex: 1, minWidth: 0 }}>
+                  {expert.isBuiltIn && (
+                    <span style={{ flexShrink: 0, opacity: 0.5, display: "flex" }}><IconLock /></span>
+                  )}
+                  <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {expert.name}
+                  </span>
+                </span>
+                {!expert.isBuiltIn && (
+                  <button
+                    className="expert-sidebar-delete"
+                    onClick={(e) => handleDeleteExpert(e, expert.id)}
+                    title="删除此专家"
+                  >
+                    <IconTrash />
+                  </button>
+                )}
+              </div>
+            ))}
+
+            <button
+              className="expert-sidebar-add-btn"
+              onClick={() => setShowCreateDialog(true)}
+            >
+              <IconPlus />
+              <span>新建专家</span>
+            </button>
           </div>
 
-          {/* 中间栏：风格主题列表 */}
+          {/* Middle column: style list for selected expert */}
           <div className="expert-middle-column">
-            <div className="style-list-header">预置风格主题</div>
+            <div className="style-list-header">
+              {selectedExpert?.name || ""} — 设计流派
+            </div>
             <div className="style-list">
-              {styles.map((style) => (
+              {(selectedExpert?.styles || []).map((style) => (
                 <div
                   key={style.id}
                   className={`style-item ${activeStyleId === style.id ? "active" : ""}`}
@@ -242,7 +481,7 @@ export function ExpertModal({ isOpen, onClose, config, onSave }: ExpertModalProp
                     <button
                       className="style-item-delete-btn"
                       onClick={(e) => handleDeleteStyle(e, style.id)}
-                      title="删除此风格"
+                      title="删除此流派"
                     >
                       <IconTrash />
                     </button>
@@ -252,49 +491,97 @@ export function ExpertModal({ isOpen, onClose, config, onSave }: ExpertModalProp
             </div>
             <button className="add-style-btn" onClick={handleAddStyle}>
               <IconPlus />
-              <span>新建自定义风格</span>
+              <span>新建自定义流派</span>
             </button>
           </div>
 
-          {/* 右侧栏：风格参数编辑器 */}
+          {/* Right column: style editor */}
           <div className="expert-right-column">
-            <h3>风格属性编辑</h3>
-            <p className="expert-hint">
-              Mermaid 逻辑结构代码由您直接输入在主会话框中，生图时将与在此配置的风格提示词进行合并，以生成精美、逻辑精准对齐、文字高清晰度的专业 VISIO 风格图表。
-            </p>
+            <h3>排版与设计流派编辑</h3>
+
+            {/* Expert description */}
+            {selectedExpert && (
+              <div style={{ fontSize: "12px", color: "var(--text-secondary)", marginBottom: "-8px" }}>
+                {selectedExpert.isBuiltIn ? (
+                  <span style={{ fontStyle: "italic" }}>{selectedExpert.description}</span>
+                ) : (
+                  <input
+                    type="text"
+                    className="style-name-input"
+                    value={selectedExpert.description}
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setLocalExperts((prev) =>
+                        prev.map((exp) =>
+                          exp.id === selectedExpertId ? { ...exp, description: val } : exp
+                        )
+                      );
+                    }}
+                    placeholder="专家描述..."
+                    style={{ marginBottom: "4px" }}
+                  />
+                )}
+              </div>
+            )}
+
+            <p className="expert-hint">{selectedExpert ? getHintForExpert(selectedExpert) : ""}</p>
+
+            {/* Expert Base Prompt Editor */}
+            {selectedExpert && (
+              <div className="form-group" style={{ display: "flex", flexDirection: "column", gap: "4px", marginBottom: "12px", flex: "none" }}>
+                <label style={{ fontSize: "12px", color: "var(--text-secondary)", fontWeight: 600 }}>专家基础排版规范 (Base Prompt)</label>
+                <textarea
+                  className="expert-code-textarea"
+                  value={selectedExpert.basePrompt}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setLocalExperts((prev) =>
+                      prev.map((exp) =>
+                        exp.id === selectedExpertId ? { ...exp, basePrompt: val } : exp
+                      )
+                    );
+                  }}
+                  placeholder="在此输入该图表类型的基础排版对齐与连线规范..."
+                  style={{ height: "160px", flex: "none", fontSize: "12.5px", whiteSpace: "pre-wrap", resize: "vertical" }}
+                />
+              </div>
+            )}
 
             {activeStyle ? (
-              <div className="style-editor-form">
-                <div className="form-group" style={{ display: "flex", flexDirection: "column", gap: "4px" }}>
-                  <label style={{ fontSize: "12px", color: "var(--text-secondary)" }}>风格名称</label>
+              <div className="style-editor-form" style={{ flex: "none", display: "flex", flexDirection: "column", gap: "14px" }}>
+                <div className="form-group" style={{ display: "flex", flexDirection: "column", gap: "4px", flex: "none" }}>
+                  <label style={{ fontSize: "12px", color: "var(--text-secondary)", fontWeight: 600 }}>流派名称</label>
                   <input
                     type="text"
                     className="style-name-input"
                     value={activeStyle.name}
-                    onChange={(e) => handleNameChange(e.target.value)}
-                    placeholder="输入风格名称..."
+                    onChange={(e) => handleStyleNameChange(e.target.value)}
+                    placeholder="输入流派名称..."
                   />
                 </div>
 
-                <div className="form-group" style={{ flex: 1, display: "flex", flexDirection: "column", gap: "4px" }}>
-                  <label style={{ fontSize: "12px", color: "var(--text-secondary)" }}>风格生图提示词 (Style Prompt)</label>
+                <div className="form-group" style={{ display: "flex", flexDirection: "column", gap: "4px", flex: "none" }}>
+                  <label style={{ fontSize: "12px", color: "var(--text-secondary)", fontWeight: 600 }}>流派生图提示词 (Style Prompt)</label>
                   <textarea
                     className="expert-code-textarea"
                     value={activeStyle.prompt}
-                    onChange={(e) => handlePromptChange(e.target.value)}
-                    placeholder="在此输入能够引导 AI 生成该风格的精细生图指令..."
-                    style={{ whiteSpace: "pre-wrap" }}
+                    onChange={(e) => handleStylePromptChange(e.target.value)}
+                    placeholder="在此输入能够引导 AI 生成该流派的色彩、背景与材质指令..."
+                    style={{ height: "220px", flex: "none", fontSize: "12.5px", whiteSpace: "pre-wrap", resize: "vertical" }}
                   />
                 </div>
               </div>
             ) : (
-              <div className="sidebar-empty">请选择或创建一个风格进行编辑</div>
+              <div className="sidebar-empty">请选择或创建一个流派进行编辑</div>
             )}
           </div>
         </div>
 
-        {/* 固定底部操作区，不随内容滚动 */}
+        {/* Footer */}
         <div className="modal-footer">
+          <button className="btn-secondary" onClick={handleRestoreDefaults} style={{ marginRight: "auto" }}>
+            恢复默认
+          </button>
           <button className="btn-secondary" onClick={onClose}>
             取消
           </button>
@@ -302,6 +589,38 @@ export function ExpertModal({ isOpen, onClose, config, onSave }: ExpertModalProp
             应用并保存
           </button>
         </div>
+
+        {/* Create Expert Dialog */}
+        {showCreateDialog && (
+          <div className="expert-create-overlay" onClick={() => setShowCreateDialog(false)}>
+            <div className="expert-create-dialog" onClick={(e) => e.stopPropagation()}>
+              <h3 style={{ margin: "0 0 12px", fontSize: "15px", fontWeight: 600 }}>新建自定义专家</h3>
+              <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+                <input
+                  type="text"
+                  className="style-name-input"
+                  value={newExpertName}
+                  onChange={(e) => setNewExpertName(e.target.value)}
+                  placeholder="专家名称（如：UML图专家、数据流图专家）"
+                  autoFocus
+                  onKeyDown={(e) => { if (e.key === "Enter") handleCreateExpert(); }}
+                />
+                <input
+                  type="text"
+                  className="style-name-input"
+                  value={newExpertDesc}
+                  onChange={(e) => setNewExpertDesc(e.target.value)}
+                  placeholder="专家描述（可选）"
+                  onKeyDown={(e) => { if (e.key === "Enter") handleCreateExpert(); }}
+                />
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: "8px", marginTop: "16px" }}>
+                <button className="btn-secondary" onClick={() => setShowCreateDialog(false)}>取消</button>
+                <button className="btn-primary" onClick={handleCreateExpert} disabled={!newExpertName.trim()}>创建</button>
+              </div>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

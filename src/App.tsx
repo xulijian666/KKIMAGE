@@ -13,7 +13,7 @@ import {
 import { SettingsModal } from "./components/SettingsModal";
 import { ImagePreviewModal } from "./components/ImagePreviewModal";
 import { applyTheme, DEFAULT_THEME } from "./utils/themes";
-import { log } from "./utils/helpers";
+import { log, debugLog, flushLogs } from "./utils/helpers";
 import "./App.css";
 
 interface WorkspaceSnapshot {
@@ -37,6 +37,7 @@ function App() {
   const [isGenerating, setIsGenerating] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
+  const [openExpertConfig, setOpenExpertConfig] = useState(false);
   const [referenceImages, setReferenceImages] = useState<ReferenceImage[]>([]);
   const [defaultZoom, setDefaultZoom] = useState(() => {
     return Number(localStorage.getItem("kkimage_default_zoom")) || 1;
@@ -46,15 +47,28 @@ function App() {
     return saved ? Number(saved) : 300;
   });
 
-  const [previewData, setPreviewData] = useState<{ url: string; name: string } | null>(null);
+  // Track whether backend has dispatched generation-started event
+  const generationDispatchedRef = useRef(false);
 
-  const [mode, setMode] = useState<"generate" | "edit">(() => {
-    return (localStorage.getItem("kkimage_mode") as "generate" | "edit") || "generate";
+  const [previewData, setPreviewData] = useState<{ url: string; name: string } | null>(null);
+  const [reloadMermaidCode, setReloadMermaidCode] = useState<string | null>(null);
+
+  const [mode, setMode] = useState<"generate" | "edit" | "ai">(() => {
+    return (localStorage.getItem("kkimage_mode") as "generate" | "edit" | "ai") || "generate";
   });
 
-  const handleModeChange = useCallback((newMode: "generate" | "edit") => {
+  // Edit-mode dedicated image slots
+  const [editOriginal, setEditOriginal] = useState<ReferenceImage | null>(null);
+  const [editAnnotated, setEditAnnotated] = useState<ReferenceImage | null>(null);
+
+  const handleModeChange = useCallback((newMode: "generate" | "edit" | "ai") => {
     setMode(newMode);
     localStorage.setItem("kkimage_mode", newMode);
+    if (newMode !== "edit") {
+      // Clear edit-mode state when leaving edit mode
+      setEditOriginal(null);
+      setEditAnnotated(null);
+    }
   }, []);
 
   const handleConfirmPreviewImage = useCallback((dataUrl: string) => {
@@ -64,13 +78,9 @@ function App() {
       dataUrl,
     };
     if (mode === "edit") {
-      setReferenceImages((prev) => {
-        if (prev.length > 0) {
-          // Keep the clean original image (prev[0]), and set/replace the annotated image as the second image
-          return [prev[0], newImage];
-        }
-        return [newImage];
-      });
+      // In edit mode, confirmed image goes to the annotated slot.
+      // If editOriginal is null, auto-populate it from the image being annotated.
+      setEditAnnotated(newImage);
     } else {
       setReferenceImages((prev) => {
         const filtered = prev.filter((img) => img.dataUrl !== dataUrl);
@@ -98,6 +108,14 @@ function App() {
 
   useEffect(() => {
     loadWorkspace().catch((err) => log(`加载工作区失败: ${err}`));
+    // Startup debug log
+    debugLog("App", "KKIMAGE started", {
+      mode: localStorage.getItem("kkimage_mode") || "generate",
+      devMode: import.meta.env.DEV,
+      version: "1.0.0",
+      logFile: "%APPDATA%\\KKIMAGE\\debug.log",
+    });
+    flushLogs();
   }, [loadWorkspace]);
 
   useEffect(() => {
@@ -152,6 +170,7 @@ function App() {
   useEffect(() => {
     const unlistenStart = listen<GenerationRecord>("generation-started", (event) => {
       const rec = event.payload;
+      generationDispatchedRef.current = true;
       setWorkspace((prev) => ({
         ...prev,
         generations: [...prev.generations.filter((item) => item.id !== rec.id), rec],
@@ -189,8 +208,34 @@ function App() {
 
   const handleGenerate = useCallback(
     async (prompt: string, model: string, size: string, quality: string, inputImages: string[]) => {
-      if (!activeSession) return;
+      debugLog("App", "handleGenerate called", {
+        hasSession: !!activeSession,
+        sessionId: activeSession?.id,
+        projectId: activeSession?.project_id,
+        promptLen: prompt.length,
+        imageCount: inputImages.length,
+        totalImageBytes: inputImages.reduce((s, img) => s + img.length, 0),
+        model,
+        size,
+        quality,
+      });
+      flushLogs();
+
+      if (!activeSession) {
+        const msg = "没有活跃的会话，请先创建或选择一个会话";
+        debugLog("App", "handleGenerate THROW: " + msg);
+        flushLogs();
+        throw new Error(msg);
+      }
+
+      generationDispatchedRef.current = false;
       try {
+        debugLog("App", "Invoking generate_image...", {
+          prompt: prompt.slice(0, 100),
+          session_id: activeSession.id,
+          project_id: activeSession.project_id,
+        });
+        flushLogs();
         await invoke("generate_image", {
           request: {
             prompt,
@@ -202,8 +247,19 @@ function App() {
             session_id: activeSession.id,
           },
         });
+        debugLog("App", "generate_image invoke completed successfully");
+        flushLogs();
       } catch (err) {
-        setIsGenerating(false);
+        debugLog("App", "generate_image FAILED", {
+          dispatched: generationDispatchedRef.current,
+          error: String(err),
+          errorType: typeof err,
+        });
+        flushLogs();
+        if (!generationDispatchedRef.current) {
+          setIsGenerating(false);
+          throw err;
+        }
         log(`生成失败: ${err}`);
       }
     },
@@ -294,13 +350,26 @@ function App() {
 
   const handleAddReferenceImages = useCallback((images: ReferenceImage[]) => {
     if (mode === "edit") {
+      // In edit mode, added images go to the original slot
       if (images.length > 0) {
-        setReferenceImages([images[0]]);
+        setEditOriginal(images[0]);
+        // Clear annotated when original changes
+        setEditAnnotated(null);
       }
     } else {
       setReferenceImages((prev) => [...prev, ...images].slice(0, 6));
     }
   }, [mode]);
+
+  const handleClearEditOriginal = useCallback(() => {
+    setEditOriginal(null);
+    // Annotated depends on original, so clear it too
+    setEditAnnotated(null);
+  }, []);
+
+  const handleClearEditAnnotated = useCallback(() => {
+    setEditAnnotated(null);
+  }, []);
 
   const handleRemoveReferenceImage = useCallback((id: string) => {
     setReferenceImages((prev) => prev.filter((image) => image.id !== id));
@@ -468,6 +537,14 @@ function App() {
         </div>
 
         <div className="titlebar-right">
+          <button className="titlebar-btn" onClick={() => setOpenExpertConfig(true)} title="专家配置">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4-4v2" />
+              <circle cx="9" cy="7" r="4" />
+              <path d="M23 21v-2a4 4 0 00-3-3.87" />
+              <path d="M16 3.13a4 4 0 010 7.75" />
+            </svg>
+          </button>
           <button className="titlebar-btn" onClick={() => setShowSettings(true)} title="设置">
             <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <circle cx="12" cy="12" r="3" />
@@ -521,6 +598,13 @@ function App() {
             onDelete={handleDeleteRecord}
             onAddReferenceImage={(image) => handleAddReferenceImages([image])}
             onPreviewImage={(url, name) => setPreviewData({ url, name })}
+            onReloadMermaid={(code) => {
+              setReloadMermaidCode(code);
+              // Switch to generate mode if in edit mode
+              if (mode === "edit") {
+                handleModeChange("generate");
+              }
+            }}
           />
 
           <GeneratePanel
@@ -535,6 +619,17 @@ function App() {
             onPreviewImage={(url, name) => setPreviewData({ url, name })}
             mode={mode}
             onModeChange={handleModeChange}
+            editOriginal={editOriginal}
+            editAnnotated={editAnnotated}
+            onSetEditOriginal={(img) => {
+              setEditOriginal(img);
+              if (!img) setEditAnnotated(null);
+            }}
+            onClearEditAnnotated={handleClearEditAnnotated}
+            reloadMermaidCode={reloadMermaidCode}
+            onReloadMermaidConsumed={() => setReloadMermaidCode(null)}
+            openExpertConfig={openExpertConfig}
+            onExpertConfigConsumed={() => setOpenExpertConfig(false)}
           />
         </div>
       </div>
@@ -606,6 +701,7 @@ function App() {
           imageName={previewData.name}
           onClose={() => setPreviewData(null)}
           onConfirm={handleConfirmPreviewImage}
+          confirmLabel={mode === "edit" ? "保存标注图" : undefined}
         />
       )}
     </div>

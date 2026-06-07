@@ -17,6 +17,7 @@ interface ImagePreviewModalProps {
   imageUrl: string;
   imageName: string;
   onConfirm: (dataUrl: string) => void;
+  confirmLabel?: string;
 }
 
 const IconPointer = () => (
@@ -66,7 +67,7 @@ const IconX = () => (
   </svg>
 );
 
-export function ImagePreviewModal({ isOpen, onClose, imageUrl, imageName, onConfirm }: ImagePreviewModalProps) {
+export function ImagePreviewModal({ isOpen, onClose, imageUrl, imageName, onConfirm, confirmLabel }: ImagePreviewModalProps) {
   const [zoom, setZoom] = useState(1.0);
   const [activeTool, setActiveTool] = useState<DrawingTool>("select");
   const [shapes, setShapes] = useState<Shape[]>([]);
@@ -628,7 +629,7 @@ export function ImagePreviewModal({ isOpen, onClose, imageUrl, imageName, onConf
                   cursor: "pointer",
                 }}
               >
-                引用当前图
+                {confirmLabel || "引用当前图"}
               </button>
               <button
                 className="btn-secondary"

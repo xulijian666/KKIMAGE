@@ -1,6 +1,8 @@
+import { type ComponentType } from "react";
 import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ExpertModal } from "./ExpertModal";
+import { ExpertModal, type ExpertDef, loadExperts, saveExperts, getExpertById } from "./ExpertModal";
+import { debugLog, exportLogsToFile, flushLogs } from "../utils/helpers";
 
 export interface ReferenceImage {
   id: string;
@@ -15,7 +17,7 @@ interface GeneratePanelProps {
     size: string,
     quality: string,
     inputImages: string[]
-  ) => void;
+  ) => Promise<void>;
   isGenerating: boolean;
   disabled?: boolean;
   activeImagePath?: string | null;
@@ -24,27 +26,112 @@ interface GeneratePanelProps {
   onRemoveReferenceImage: (id: string) => void;
   onClearReferenceImages: () => void;
   onPreviewImage: (url: string, name: string) => void;
-  mode: "generate" | "edit";
-  onModeChange: (newMode: "generate" | "edit") => void;
+  mode: "generate" | "edit" | "ai";
+  onModeChange: (newMode: "generate" | "edit" | "ai") => void;
+  editOriginal: ReferenceImage | null;
+  editAnnotated: ReferenceImage | null;
+  onSetEditOriginal: (image: ReferenceImage | null) => void;
+  onClearEditAnnotated: () => void;
+  reloadMermaidCode?: string | null;
+  onReloadMermaidConsumed?: () => void;
+  openExpertConfig?: boolean;
+  onExpertConfigConsumed?: () => void;
 }
 
 const MODEL = import.meta.env.VITE_MODEL || "gpt-image-2";
 const MAX_REFERENCE_IMAGES = 6;
 
-const SIZES = [
-  { value: "1024x1024", label: "1:1 1024" },
-  { value: "1536x1024", label: "3:2 1536" },
-  { value: "1024x1536", label: "2:3 1536" },
-  { value: "2048x2048", label: "1:1 2048" },
-  { value: "3840x2160", label: "16:9 4K" },
-  { value: "auto", label: "自动" },
-];
 
-const QUALITIES = [
-  { value: "auto", label: "自动" },
-  { value: "low", label: "低" },
-  { value: "medium", label: "中" },
-  { value: "high", label: "高" },
+
+const IconEdit = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z" />
+    <path d="m15 5 4 4" />
+  </svg>
+);
+
+const IconEraser = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21" />
+    <path d="M22 21H7" />
+    <path d="m5 11 9 9" />
+  </svg>
+);
+
+const IconImageOff = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <line x1="2" y1="2" x2="22" y2="22" />
+    <path d="M10.41 10.41a2 2 0 1 1-2.83-2.83" />
+    <path d="M13.5 13.5 17 17" />
+    <path d="M3 5v14a2 2 0 0 0 2 2h14" />
+    <path d="M21 12V5a2 2 0 0 0-2-2H9" />
+    <path d="m3 3 18 18" />
+  </svg>
+);
+
+const IconZoomIn = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="11" cy="11" r="8" />
+    <path d="m21 21-4.3-4.3" />
+    <path d="M11 8v6" />
+    <path d="M8 11h6" />
+  </svg>
+);
+
+const IconAlertTriangle = () => (
+  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z" />
+    <path d="M12 9v4" />
+    <path d="M12 17h.01" />
+  </svg>
+);
+
+const EDIT_TASK_PRESETS: { id: string; label: string; Icon: ComponentType; prompt: string }[] = [
+  {
+    id: "none",
+    label: "自定义",
+    Icon: IconEdit,
+    prompt: "",
+  },
+  {
+    id: "remove-watermark",
+    label: "去水印",
+    Icon: IconEraser,
+    prompt: `请去除图像中的所有水印，包括但不限于：文字水印、Logo 水印、半透明叠加水印、重复平铺水印。
+
+【处理要求】
+1. 自动识别并精准定位图像中所有水印元素（包括半透明、低对比度、融入背景的水印）。
+2. 完整去除水印覆盖区域，使用与周围环境一致的纹理、颜色和图案进行自然填充（Inpainting）。
+3. 确保去除后区域与周围画面无缝融合，无明显的涂抹痕迹、色块差异或纹理断裂。
+4. 保持图像其余所有区域的像素完全不变，不引入任何伪影或质量损失。
+5. 如果图像中存在标注参考图（带有红色矩形或圆形标记），请优先处理标注区域内及紧邻区域的水印。
+6. 输出结果必须保持原始分辨率和画质。`,
+  },
+  {
+    id: "remove-bg",
+    label: "去背景",
+    Icon: IconImageOff,
+    prompt: `请精准去除图像背景，保留完整的前景主体。
+
+【处理要求】
+1. 精准识别前景主体的完整轮廓，包括边缘细节（发丝、羽毛、透明物体等）。
+2. 完全去除背景区域。
+3. 用纯白色填充原背景区域（如果需要透明背景请在追加描述中说明）。
+4. 保持前景主体的所有细节、颜色和质感完全不变。`,
+  },
+  {
+    id: "enhance",
+    label: "增强画质",
+    Icon: IconZoomIn,
+    prompt: `请对图像进行全面的画质增强处理。
+
+【处理要求】
+1. 提升图像分辨率和整体清晰度。
+2. 优化色彩饱和度和对比度，使画面更鲜明生动。
+3. 降低噪点，提高信噪比。
+4. 增强细节纹理表现力。
+5. 保持图像内容的完整性和自然感，不过度锐化或失真。`,
+  },
 ];
 
 const IconSparkles = () => (
@@ -72,30 +159,6 @@ const IconX = () => (
   </svg>
 );
 
-const DEFAULT_BLUE_PROMPT = `绘制一个标准的专业图表，整体设计要求与微软 VISIO 风格保持高度一致。
-
-【核心排版逻辑与连线规范】
-1. 必须完全、精准地遵循输入的 Mermaid 代码所定义的节点、顺序、交互角色和连线逻辑，确保最终渲染 of the 图示连线、拓扑关系、流转路径与输入的 Mermaid 源码完全一致，绝无遗漏、多余、反向或篡改。
-2. 如果是流程图：
-   - 连接线必须是水平或垂直的直角折线（Orthogonal lines），严禁斜线、弧线或交叉重叠的无序曲线。
-   - 线条末端必须有清晰锐利的标准指向箭头，确保指向正确的下游节点。
-   - 起止节点统一为圆角矩形，普通步骤为直角矩形，条件判断为标准菱形。
-3. 如果是时序图：
-   - 参与者/对象方框在顶部横向排齐对齐，下方延伸出垂直虚线作为生命线（Lifelines）。
-   - 交互消息传递线使用带箭头的水平线（实线为请求/调用，虚线为返回/答复），线段必须完全水平，严禁倾斜。
-   - 生命线上的激活矩形块（Activation boxes）定位必须精准，长度和时间范围严格吻合。
-   
-【文字与可读性要求】
-1. 所有文本内容（包括节点文字、连线标签、参与者名称）必须极其清晰、高分辨率、高对比度、极其易读。
-2. 严禁出现拼写混乱、字符丢失、模糊、边缘毛糙或文字与节点/连线重叠的情况。
-3. 文字使用标准的扁平化无衬线系统字体（如 Arial 或 Segoe UI），在节点或线条上方居中对齐，大小适中。
-
-【色彩与平面视觉风格】
-1. 呈现极简、高端的 2D 扁平图表风格，严禁任何三维 3D 渲染、写实插图或杂乱的渐变阴影。
-2. 背景必须是纯白底，提供最干净的阅读体验。
-3. 节点填充颜色使用低饱和度的经典 VISIO 浅蓝色（例如 HSL 210, 80%, 90%），边框为深蓝色，文字为黑色或深灰色。
-4. 严禁使用任何 Emoji 表情符号或无意义的图标点缀。`;
-
 function createId() {
   return crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`;
 }
@@ -121,48 +184,127 @@ export function GeneratePanel({
   onPreviewImage,
   mode,
   onModeChange,
+  editOriginal,
+  editAnnotated,
+  onSetEditOriginal,
+  onClearEditAnnotated,
+  reloadMermaidCode,
+  onReloadMermaidConsumed,
+  openExpertConfig,
+  onExpertConfigConsumed,
 }: GeneratePanelProps) {
   const [prompt, setPrompt] = useState("");
-  const [size, setSize] = useState(() => localStorage.getItem("kkimage_size") || "1024x1024");
-  const [quality, setQuality] = useState(() => localStorage.getItem("kkimage_quality") || "auto");
+  const [size] = useState("auto");
+  const [quality] = useState("auto");
+  const [generateError, setGenerateError] = useState<string | null>(null);
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [editTask, setEditTask] = useState<string>(() => {
+    return localStorage.getItem("kkimage_edit_task") || "none";
+  });
+  const [aiDescription, setAiDescription] = useState("");
+  const [isMermaidGenerating, setIsMermaidGenerating] = useState(false);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // 模式状态 (生成模式 / 修改模式)
-  const handleModeChange = (val: "generate" | "edit") => {
+  // 模式状态 (生成模式 / 修改模式 / AI生成Mermaid)
+  const handleModeChange = (val: "generate" | "edit" | "ai") => {
     onModeChange(val);
   };
 
-  // 专家状态
-  const [activeExpert, setActiveExpert] = useState<"none" | "visio">(() => {
-    return (localStorage.getItem("kkimage_active_expert") as "none" | "visio") || "none";
-  });
-  const [showExpertModal, setShowExpertModal] = useState(false);
-  const [expertConfig, setExpertConfig] = useState(() => {
-    const saved = localStorage.getItem("kkimage_expert_config");
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch (e) {}
+  // Watch for reload Mermaid code from ChatWorkspace
+  useEffect(() => {
+    if (reloadMermaidCode) {
+      setPrompt(reloadMermaidCode);
+      // Auto-select VISIO expert if none selected
+      if (activeExpert === "none") {
+        handleActiveExpertChange("visio");
+      }
+      onReloadMermaidConsumed?.();
+      textareaRef.current?.focus();
     }
-    return {
-      activeStyleId: "blue",
-      styles: [],
-    };
-  });
+  }, [reloadMermaidCode]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const handleSaveExpertConfig = (newConfig: typeof expertConfig) => {
-    setExpertConfig(newConfig);
-    localStorage.setItem("kkimage_expert_config", JSON.stringify(newConfig));
+  // Watch for openExpertConfig from titlebar
+  useEffect(() => {
+    if (openExpertConfig) {
+      setShowExpertModal(true);
+      onExpertConfigConsumed?.();
+    }
+  }, [openExpertConfig]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 快捷任务切换
+  const handleTaskChange = (taskId: string) => {
+    setEditTask(taskId);
+    localStorage.setItem("kkimage_edit_task", taskId);
   };
 
-  const handleActiveExpertChange = (val: "none" | "visio") => {
+  // 专家状态
+  const [activeExpert, setActiveExpert] = useState<string>(() => {
+    return localStorage.getItem("kkimage_active_expert") || "none";
+  });
+  const [showExpertModal, setShowExpertModal] = useState(false);
+  const [experts, setExperts] = useState<ExpertDef[]>(() => loadExperts());
+  const [activeStyleId, setActiveStyleId] = useState<string>(() => {
+    return localStorage.getItem("kkimage_active_style_id") || "classic-blue";
+  });
+
+  // Verify and reset invalid activeExpert/activeStyleId loaded from previous storage
+  useEffect(() => {
+    if (activeExpert !== "none" && !experts.some((e) => e.id === activeExpert)) {
+      setActiveExpert("flowchart");
+      localStorage.setItem("kkimage_active_expert", "flowchart");
+      const flowchartExpert = experts.find((e) => e.id === "flowchart");
+      if (flowchartExpert && flowchartExpert.styles.length > 0) {
+        setActiveStyleId(flowchartExpert.styles[0].id);
+        localStorage.setItem("kkimage_active_style_id", flowchartExpert.styles[0].id);
+      }
+    } else if (activeExpert !== "none") {
+      const expert = experts.find((e) => e.id === activeExpert);
+      if (expert && !expert.styles.some((s) => s.id === activeStyleId)) {
+        if (expert.styles.length > 0) {
+          setActiveStyleId(expert.styles[0].id);
+          localStorage.setItem("kkimage_active_style_id", expert.styles[0].id);
+        }
+      }
+    }
+  }, [experts, activeExpert, activeStyleId]);
+
+  const handleSaveExperts = (updatedExperts: ExpertDef[], newActiveStyleId: string) => {
+    setExperts(updatedExperts);
+    saveExperts(updatedExperts);
+    if (newActiveStyleId) {
+      setActiveStyleId(newActiveStyleId);
+      localStorage.setItem("kkimage_active_style_id", newActiveStyleId);
+    }
+  };
+
+  const handleActiveExpertChange = (val: string) => {
     setActiveExpert(val);
     localStorage.setItem("kkimage_active_expert", val);
+    // Auto-select first style of new expert
+    const expert = getExpertById(experts, val);
+    if (expert && expert.styles.length > 0) {
+      const firstStyleId = expert.styles[0].id;
+      setActiveStyleId(firstStyleId);
+      localStorage.setItem("kkimage_active_style_id", firstStyleId);
+    }
   };
 
   const appendReferenceImages = async (files: File[]) => {
     const imageFiles = files.filter((file) => file.type.startsWith("image/"));
     if (imageFiles.length === 0 || isGenerating || disabled) return;
+
+    if (mode === "edit") {
+      // In edit mode, pasted image goes to original slot
+      if (!editOriginal && imageFiles.length > 0) {
+        const file = imageFiles[0];
+        onSetEditOriginal({
+          id: createId(),
+          name: file.name || "粘贴图片",
+          dataUrl: await readFileAsDataUrl(file),
+        });
+      }
+      return;
+    }
 
     const freeSlots = Math.max(0, MAX_REFERENCE_IMAGES - referenceImages.length);
     const nextFiles = imageFiles.slice(0, freeSlots);
@@ -186,67 +328,193 @@ export function GeneratePanel({
   };
 
   const handlePickImage = async () => {
-    if (isGenerating || disabled || referenceImages.length >= MAX_REFERENCE_IMAGES) return;
+    if (isGenerating || disabled) return;
+    if (mode !== "edit" && referenceImages.length >= MAX_REFERENCE_IMAGES) return;
+
     const imagePath = await invoke<string | null>("select_image_file");
     if (!imagePath) return;
 
     const dataUrl = await invoke<string>("get_image_data_url", { imagePath });
-    onAddReferenceImages([
-      {
-        id: createId(),
-        name: imagePath.split(/[\\/]/).pop() || "参考图",
-        dataUrl,
-      },
-    ]);
+    const image: ReferenceImage = {
+      id: createId(),
+      name: imagePath.split(/[\\/]/).pop() || "参考图",
+      dataUrl,
+    };
+
+    if (mode === "edit") {
+      onSetEditOriginal(image);
+    } else {
+      onAddReferenceImages([image]);
+    }
   };
 
   const handleUseCurrentImage = async () => {
-    if (!activeImagePath || isGenerating || disabled || referenceImages.length >= MAX_REFERENCE_IMAGES) return;
+    if (!activeImagePath || isGenerating || disabled) return;
+    if (mode !== "edit" && referenceImages.length >= MAX_REFERENCE_IMAGES) return;
+
     const dataUrl = await invoke<string>("get_image_data_url", { imagePath: activeImagePath });
-    onAddReferenceImages([{ id: createId(), name: "当前图", dataUrl }]);
+    const image: ReferenceImage = { id: createId(), name: "当前图", dataUrl };
+
+    if (mode === "edit") {
+      onSetEditOriginal(image);
+    } else {
+      onAddReferenceImages([image]);
+    }
     textareaRef.current?.focus();
   };
 
-  const handleSubmit = () => {
-    const trimmed = prompt.trim();
-    if (!trimmed || isGenerating || disabled) return;
-    if (mode === "edit" && referenceImages.length === 0) return;
+  const handleSubmit = async () => {
+    // Immediate console.log for debugging even if debugLog fails
+    console.log("[SUBMIT] handleSubmit triggered at", new Date().toISOString());
+    debugLog("Submit", "handleSubmit called", {
+      prompt: prompt.trim().slice(0, 50),
+      mode,
+      isGenerating,
+      disabled,
+      editOriginal: !!editOriginal,
+      editAnnotated: !!editAnnotated,
+      referenceImagesCount: referenceImages.length,
+    });
+    flushLogs();
 
-    localStorage.setItem("kkimage_size", size);
-    localStorage.setItem("kkimage_quality", quality);
+    const trimmed = prompt.trim();
+    // Determine if we can proceed without typed text (quick task selected)
+    const activeTaskPreset = mode === "edit" && editTask !== "none"
+      ? EDIT_TASK_PRESETS.find((t) => t.id === editTask)
+      : null;
+
+    if (!trimmed && !activeTaskPreset) {
+      debugLog("Submit", "EARLY RETURN: prompt is empty and no quick task selected");
+      flushLogs();
+      return;
+    }
+    if (isGenerating) {
+      debugLog("Submit", "EARLY RETURN: already generating");
+      flushLogs();
+      return;
+    }
+    if (disabled) {
+      debugLog("Submit", "EARLY RETURN: panel disabled (no session?)");
+      flushLogs();
+      return;
+    }
+    if (mode === "edit" && !editOriginal) {
+      debugLog("Submit", "EARLY RETURN: edit mode but no original image");
+      flushLogs();
+      return;
+    }
+
+
 
     let finalPrompt = trimmed;
+    let inputImages: string[] = [];
 
     if (mode === "edit") {
+      const hasAnnotated = !!editAnnotated;
+      inputImages = [editOriginal!.dataUrl];
+      if (hasAnnotated) inputImages.push(editAnnotated!.dataUrl);
+      debugLog("Submit", `Edit mode: ${inputImages.length} image(s), annotated=${hasAnnotated}`, {
+        originalSize: editOriginal!.dataUrl.length,
+        annotatedSize: hasAnnotated ? editAnnotated!.dataUrl.length : 0,
+      });
+
+      let imageContextBlock = "";
+      if (hasAnnotated) {
+        imageContextBlock = `【输入图像说明】
+- 第 1 张图像是"原始底图"（未标注的干净原图），代表需要被修改的原始画面。
+- 第 2 张图像是"标注参考图"（带有红色矩形、圆形或自由笔迹标记），标记指示了需要修改的具体区域。
+请优先以标注参考图中标记的区域作为修改目标，同时参考原始底图保持未修改区域的像素完全一致。\n`;
+      } else {
+        imageContextBlock = `【输入图像说明】
+- 唯一的图像是"原始底图"，代表需要被修改的原始画面。用户没有提供标注图，请根据文字指令自行判断修改区域。\n`;
+      }
+
+      // Build the user instruction portion
+      let userInstruction = "";
+      if (activeTaskPreset && trimmed) {
+        // Task preset + user's additional description
+        userInstruction = `${activeTaskPreset.prompt}\n\n用户追加的具体要求：\n${trimmed}`;
+      } else if (activeTaskPreset) {
+        // Task preset only (no user text)
+        userInstruction = activeTaskPreset.prompt;
+      } else {
+        // Manual text only
+        userInstruction = trimmed;
+      }
+
       finalPrompt = `【图像局部修改模式指令】
 您现在的任务是根据用户的修改要求对输入的底图进行精确的局部调整。
-请严格遵循以下规则，这是最关键的要求：
-1. 【精确修改】：只修改用户指出的特定区域或要求调整的内容。如果是带红色矩形、圆形或自由笔迹标记的图像，请精确聚焦在这些标记指示的修改区域。
-2. 【像素保持】：严禁改动图中任何其他未被指出要修改的区域。保持原图的背景、布局、原始字符、连线、图表结构、比例大小和配色方案与原图 100% 完全一致。
-3. 【风格融入】：修改后产生的新元素或文字在字体、颜色、大小、线条粗细和整体平面图表风格上必须与原图无缝融合，不留修剪痕迹。
+${imageContextBlock}
+请严格遵循以下规则：
+1. 【精确修改】：只修改用户指出的特定区域或要求调整的内容。
+2. 【像素保持】：严禁改动图中任何其他未被指出要修改的区域。保持原图的背景、布局、原始字符、连线、图表结构、比例大小和配色方案 100% 一致。
+3. 【风格融入】：修改后产生的新元素或文字必须与原图无缝融合。
 
 用户的具体修改指令如下：
-${trimmed}`;
-    } else if (activeExpert === "visio") {
-      const activeStyle = expertConfig.styles?.find(
-        (s: any) => s.id === expertConfig.activeStyleId
-      ) || { prompt: DEFAULT_BLUE_PROMPT };
+${userInstruction}`;
+    } else if (activeExpert !== "none") {
+      const expert = getExpertById(experts, activeExpert);
+      const activeStyle = expert?.styles.find(
+        (s) => s.id === activeStyleId
+      ) || expert?.styles[0];
 
-      finalPrompt = `${activeStyle.prompt}
+      if (expert && activeStyle) {
+        finalPrompt = `${expert.basePrompt}
+
+【设计流派与色彩规范】
+${activeStyle.prompt}
 
 要绘制的 Mermaid 结构与图形关系描述为：
 ${trimmed}`;
+      } else if (activeStyle) {
+        finalPrompt = `${activeStyle.prompt}
+
+要绘制的 Mermaid 结构与图形关系描述为：
+${trimmed}`;
+      } else {
+        finalPrompt = trimmed;
+      }
+
+      inputImages = referenceImages.map((image) => image.dataUrl);
+      debugLog("Submit", `Generate mode (expert=${activeExpert}): ${inputImages.length} ref image(s)`);
+    } else {
+      inputImages = referenceImages.map((image) => image.dataUrl);
+      debugLog("Submit", `Generate mode: ${inputImages.length} ref image(s)`);
     }
 
-    onGenerate(
-      finalPrompt,
-      MODEL,
+    debugLog("Submit", "Calling onGenerate...", {
+      promptLength: finalPrompt.length,
+      imageCount: inputImages.length,
+      totalImageBytes: inputImages.reduce((sum, img) => sum + img.length, 0),
+      model: MODEL,
       size,
       quality,
-      referenceImages.map((image) => image.dataUrl)
-    );
-    setPrompt("");
-    onClearReferenceImages();
+    });
+    flushLogs();
+
+    try {
+      setGenerateError(null);
+      setIsSubmitting(true);
+      debugLog("Submit", "About to call await onGenerate()");
+      flushLogs();
+      await onGenerate(finalPrompt, MODEL, size, quality, inputImages);
+      debugLog("Submit", "onGenerate resolved successfully, clearing prompt");
+      flushLogs();
+      setPrompt("");
+      if (mode === "edit") {
+        setEditTask("none");
+      } else {
+        onClearReferenceImages();
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      debugLog("Submit", "onGenerate FAILED", errMsg);
+      flushLogs();
+      setGenerateError(errMsg);
+      console.error("生成失败:", err);
+    } finally {
+      setIsSubmitting(false);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -256,25 +524,235 @@ ${trimmed}`;
     }
   };
 
+  const handleGenerateMermaid = async () => {
+    const desc = aiDescription.trim();
+    if (!desc || isMermaidGenerating) return;
+    setIsMermaidGenerating(true);
+    setGenerateError(null);
+    try {
+      debugLog("AI", "Generating Mermaid from description", { descLen: desc.length });
+      flushLogs();
+      const mermaidCode = await invoke<string>("generate_mermaid", { description: desc });
+      debugLog("AI", "Mermaid generated", { codeLen: mermaidCode.length });
+      flushLogs();
+      setPrompt(mermaidCode);
+      // Auto-select VISIO expert if none selected
+      if (activeExpert === "none") {
+        handleActiveExpertChange("visio");
+      }
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      debugLog("AI", "Mermaid generation failed", errMsg);
+      flushLogs();
+      setGenerateError(errMsg);
+    } finally {
+      setIsMermaidGenerating(false);
+    }
+  };
+
   return (
     <div className="generate-panel">
-      <div className="prompt-area" style={{ display: "flex", flexDirection: "column" }}>
-        {/* Mode Switcher Tabs */}
-        <div
-          className="mode-tabs"
-          style={{
-            display: "flex",
-            gap: "2px",
-            borderBottom: "1px solid var(--border-color)",
-            padding: "4px 8px",
-            background: "var(--bg-sidebar)",
-            alignItems: "center",
-          }}
-        >
+      {/* Edit mode: dual-slot image layout — ABOVE tabs to prevent layout shift */}
+      {mode === "edit" && (
+        <div className="edit-slots">
+          {/* Slot 1: Original Image */}
+          <div className="edit-slot edit-slot-original">
+            <div className="edit-slot-label">
+              <span className="edit-slot-step">Step 1</span>
+              <span className="edit-slot-title">原图</span>
+            </div>
+            {editOriginal ? (
+              <div className="edit-slot-image">
+                <img
+                  src={editOriginal.dataUrl}
+                  alt="原图"
+                  onClick={() => onPreviewImage(editOriginal.dataUrl, "原图")}
+                  style={{ cursor: "pointer" }}
+                />
+                <button
+                  className="edit-slot-annotate"
+                  type="button"
+                  title="打开标注面板"
+                  onClick={() => onPreviewImage(editOriginal.dataUrl, "标注原图")}
+                  disabled={isGenerating}
+                >
+                  标注
+                </button>
+                <button
+                  className="edit-slot-remove"
+                  type="button"
+                  title="移除原图"
+                  onClick={() => onSetEditOriginal(null)}
+                  disabled={isGenerating}
+                >
+                  <IconX />
+                </button>
+              </div>
+            ) : (
+              <div
+                className="edit-slot-empty"
+                onClick={() => { if (!isGenerating && !disabled) handlePickImage(); }}
+              >
+                <IconImagePlus />
+                <span>点击添加或粘贴底图</span>
+              </div>
+            )}
+          </div>
+
+          {/* Arrow between slots */}
+          <div className="edit-slot-arrow">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9 18 15 12 9 6" />
+            </svg>
+          </div>
+
+          {/* Slot 2: Annotated Image */}
+          <div className="edit-slot edit-slot-annotated">
+            <div className="edit-slot-label">
+              <span className="edit-slot-step">Step 2</span>
+              <span className="edit-slot-title">标注图</span>
+              <span className="edit-slot-optional">可选</span>
+            </div>
+            {editAnnotated ? (
+              <div className="edit-slot-image">
+                <img
+                  src={editAnnotated.dataUrl}
+                  alt="标注图"
+                  onClick={() => onPreviewImage(editAnnotated.dataUrl, "标注图")}
+                  style={{ cursor: "pointer" }}
+                />
+                <button
+                  className="edit-slot-remove"
+                  type="button"
+                  title="移除标注图"
+                  onClick={onClearEditAnnotated}
+                  disabled={isGenerating}
+                >
+                  <IconX />
+                </button>
+              </div>
+            ) : (
+              <div className={`edit-slot-empty ${!editOriginal ? "edit-slot-empty-disabled" : ""}`}>
+                <span>{editOriginal ? "点击左侧\u2018标注\u2019按钮进行标注" : "请先添加原图"}</span>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* AI mode: natural language input — ABOVE tabs */}
+      {mode === "ai" && (
+        <div className="ai-mode-section">
+          <textarea
+            className="prompt-input ai-description-input"
+            placeholder="用自然语言描述你想画的图...（例如：用户登录流程，包含输入账号密码、验证、登录成功/失败分支）"
+            value={aiDescription}
+            onChange={(e) => setAiDescription(e.target.value)}
+            rows={3}
+            disabled={isGenerating || isMermaidGenerating || disabled}
+          />
           <button
             type="button"
-            className={`mode-tab ${mode === "generate" ? "active" : ""}`}
-            onClick={() => handleModeChange("generate")}
+            className="btn-generate-mermaid"
+            onClick={handleGenerateMermaid}
+            disabled={!aiDescription.trim() || isMermaidGenerating || isGenerating || disabled}
+          >
+            {isMermaidGenerating ? (
+              <>
+                <span className="spinner" />
+                <span>AI 生成中...</span>
+              </>
+            ) : (
+              <>
+                <IconSparkles />
+                <span>AI 生成 Mermaid</span>
+              </>
+            )}
+          </button>
+          {prompt.trim() && (
+            <div className="ai-mode-hint">
+              Mermaid 代码已生成，可编辑后点击“生成”出图
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Step hint for edit mode — above tabs */}
+      {mode === "edit" && (
+        <div className="edit-step-hint" style={{ padding: "4px 16px 0" }}>
+          {!editOriginal
+            ? "Step 1: 请添加需要处理的图片"
+            : editTask !== "none"
+            ? `已选「${EDIT_TASK_PRESETS.find(t => t.id === editTask)?.label}」— 用"标注"框选区域可提升精准度，或直接点生成`
+            : !prompt.trim()
+            ? "Step 2: 可选标注区域，然后在此输入修改要求"
+            : "Step 3: 点击\u2018生成\u2019提交修改"}
+        </div>
+      )}
+
+      {/* Quick task presets for edit mode — above tabs */}
+      {mode === "edit" && editOriginal && (
+        <div className="edit-task-presets" style={{ padding: "4px 16px 0" }}>
+          <span className="edit-task-label">快捷任务:</span>
+          {EDIT_TASK_PRESETS.map((task) => (
+            <button
+              key={task.id}
+              type="button"
+              className={`edit-task-btn ${editTask === task.id ? "active" : ""}`}
+              onClick={() => handleTaskChange(task.id)}
+            >
+              <task.Icon />
+              <span>{task.label}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {/* Generate / AI mode: flat reference strip — above tabs */}
+      {(mode === "generate" || mode === "ai") && referenceImages.length > 0 && (
+        <div className="reference-strip" style={{ padding: "8px 16px 0", margin: 0 }}>
+          {referenceImages.map((image) => (
+            <div
+              className="reference-thumb"
+              key={image.id}
+              title={image.name}
+              onClick={() => onPreviewImage(image.dataUrl, image.name)}
+              style={{ cursor: "pointer" }}
+            >
+              <img src={image.dataUrl} alt="" />
+              <button
+                className="reference-remove"
+                type="button"
+                title="移除参考图"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onRemoveReferenceImage(image.id);
+                }}
+                disabled={isGenerating}
+              >
+                <IconX />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Mode Switcher Tabs */}
+      <div
+        className="mode-tabs"
+        style={{
+          display: "flex",
+          gap: "2px",
+          borderBottom: "1px solid var(--border-color)",
+          padding: "4px 8px",
+          background: "var(--bg-sidebar)",
+          alignItems: "center",
+        }}
+      >
+        <button
+          type="button"
+          className={`mode-tab ${mode === "generate" ? "active" : ""}`}
+          onClick={() => handleModeChange("generate")}
             style={{
               padding: "4px 12px",
               fontSize: "12px",
@@ -307,44 +785,62 @@ ${trimmed}`;
           >
             修改模式 (Edit)
           </button>
-        </div>
+          <button
+            type="button"
+            className={`mode-tab ${mode === "ai" ? "active" : ""}`}
+            onClick={() => handleModeChange("ai")}
+            style={{
+              padding: "4px 12px",
+              fontSize: "12px",
+              fontWeight: 500,
+              borderRadius: "4px",
+              border: "none",
+              cursor: "pointer",
+              background: mode === "ai" ? "var(--bg-active-item)" : "transparent",
+              color: mode === "ai" ? "var(--text-active-item)" : "var(--text-secondary)",
+              transition: "all 0.15s ease",
+            }}
+          >
+            AI 生成 Mermaid
+          </button>
 
-        {referenceImages.length > 0 && (
-          <div className="reference-strip">
-            {referenceImages.map((image) => (
-              <div
-                className="reference-thumb"
-                key={image.id}
-                title={image.name}
-                onClick={() => onPreviewImage(image.dataUrl, image.name)}
-                style={{ cursor: "pointer" }}
-              >
-                <img src={image.dataUrl} alt="" />
-                <button
-                  className="reference-remove"
-                  type="button"
-                  title="移除参考图"
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRemoveReferenceImage(image.id);
-                  }}
-                  disabled={isGenerating}
-                >
-                  <IconX />
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
+          {/* Dev mode: export logs button */}
+          {import.meta.env.DEV && (
+            <button
+              type="button"
+              onClick={exportLogsToFile}
+              title={`导出调试日志 (文件: %APPDATA%\KKIMAGE\debug.log)`}
+              style={{
+                marginLeft: "auto",
+                padding: "2px 8px",
+                fontSize: "11px",
+                borderRadius: "4px",
+                border: "1px solid var(--border-color)",
+                background: "transparent",
+                color: "var(--text-secondary)",
+                cursor: "pointer",
+              }}
+            >
+              日志
+            </button>
+          )}
+      </div>
 
+      <div className="prompt-area" style={{ display: "flex", flexDirection: "column" }}>
         <textarea
           ref={textareaRef}
           className="prompt-input"
           placeholder={
             disabled
               ? "先在左侧选择一个会话..."
+              : mode === "ai"
+              ? "在此编辑 Mermaid 代码（由上方 AI 生成，或直接粘贴自己的 Mermaid 代码）..."
               : mode === "edit"
-              ? "【修改模式】请先在下方添加或引用修改底图，然后在此输入具体的修改要求（可在上方参考图缩略图或点击聊天流中的大图打开标注面板进行画笔或框选标记）..."
+              ? editOriginal
+                ? editTask !== "none"
+                  ? `已选择「${EDIT_TASK_PRESETS.find(t => t.id === editTask)?.label}」，可追加额外描述（可选）...`
+                  : "在此输入具体的修改要求..."
+                : "请先添加原图，然后在此输入修改要求..."
               : activeExpert !== "none"
               ? "请输入或粘贴 Mermaid 代码（例如：graph TD 或 sequenceDiagram）进行图表绘制，支持添加其它微调描述..."
               : "描述你想生成或修改的图片，支持直接粘贴图片..."
@@ -358,125 +854,138 @@ ${trimmed}`;
         />
       </div>
 
+      {/* Error banner */}
+      {generateError && (
+        <div
+          className="generate-error-banner"
+          style={{
+            margin: "0 12px",
+            padding: "6px 10px",
+            background: "rgba(239, 68, 68, 0.12)",
+            border: "1px solid rgba(239, 68, 68, 0.3)",
+            borderRadius: "6px",
+            fontSize: "12px",
+            color: "var(--color-red)",
+            display: "flex",
+            alignItems: "center",
+            gap: "8px",
+          }}
+        >
+          <span style={{ flex: 1, wordBreak: "break-word", display: "flex", alignItems: "center", gap: "4px" }}>
+            <IconAlertTriangle />
+            生成失败: {generateError}
+          </span>
+          <button
+            type="button"
+            onClick={() => setGenerateError(null)}
+            style={{
+              background: "none",
+              border: "none",
+              color: "var(--text-secondary)",
+              cursor: "pointer",
+              padding: "0 2px",
+              fontSize: "14px",
+              lineHeight: 1,
+              flexShrink: 0,
+            }}
+          >
+            ×
+          </button>
+        </div>
+      )}
+
       <div className="params-bar">
         <div className="params-left">
           <button
             className="btn-tool"
             type="button"
-            title="添加参考图"
+            title={mode === "edit" ? "添加原图" : "添加参考图"}
             onClick={handlePickImage}
-            disabled={isGenerating || disabled || referenceImages.length >= MAX_REFERENCE_IMAGES}
+            disabled={isGenerating || disabled || (mode === "generate" && referenceImages.length >= MAX_REFERENCE_IMAGES)}
           >
             <IconImagePlus />
-            <span>参考图</span>
+            <span>{mode === "edit" ? "原图" : "参考图"}</span>
           </button>
 
           {activeImagePath && (
             <button
               className="btn-tool"
               type="button"
-              title="把当前结果作为参考图继续修改"
+              title={mode === "edit" ? "把当前结果作为原图继续修改" : "把当前结果作为参考图继续修改"}
               onClick={handleUseCurrentImage}
-              disabled={isGenerating || disabled || referenceImages.length >= MAX_REFERENCE_IMAGES}
+              disabled={isGenerating || disabled || (mode === "generate" && referenceImages.length >= MAX_REFERENCE_IMAGES)}
             >
               <IconSparkles />
               <span>引用当前图</span>
             </button>
           )}
-
-          <div className="param-group">
-            <label className="param-label">尺寸</label>
-            <select
-              className="param-select"
-              value={size}
-              onChange={(e) => setSize(e.target.value)}
-              disabled={isGenerating || disabled}
-            >
-              {SIZES.map((s) => (
-                <option key={s.value} value={s.value}>
-                  {s.label}
-                </option>
-              ))}
-            </select>
-          </div>
-
-          <div className="param-group">
-            <label className="param-label">质量</label>
-            <select
-              className="param-select"
-              value={quality}
-              onChange={(e) => setQuality(e.target.value)}
-              disabled={isGenerating || disabled}
-            >
-              {QUALITIES.map((q) => (
-                <option key={q.value} value={q.value}>
-                  {q.label}
-                </option>
-              ))}
-            </select>
-          </div>
         </div>
 
         <div className="params-right" style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-          {mode === "edit" && referenceImages.length === 0 && (
-            <span style={{ fontSize: "12px", color: "var(--color-red)", fontWeight: 500, marginRight: "4px" }}>
-              ⚠️ 请先添加修改底图
+          {mode === "edit" && !editOriginal && (
+            <span style={{ fontSize: "12px", color: "var(--color-red)", fontWeight: 500, marginRight: "4px", display: "flex", alignItems: "center", gap: "4px" }}>
+              <IconAlertTriangle />
+              请先添加修改底图
             </span>
           )}
 
-          {mode === "generate" && (
+          {mode !== "edit" && (
             <>
               <select
                 className="param-select expert-select"
                 value={activeExpert}
-                onChange={(e) => handleActiveExpertChange(e.target.value as "none" | "visio")}
+                onChange={(e) => handleActiveExpertChange(e.target.value)}
                 disabled={isGenerating || disabled}
                 style={{ height: "32px", fontSize: "12px" }}
               >
                 <option value="none">无专家</option>
-                <option value="visio">VISIO图专家</option>
+                {experts.map((expert) => (
+                  <option key={expert.id} value={expert.id}>{expert.name}</option>
+                ))}
               </select>
 
-              <button
-                className={`btn-expert ${activeExpert !== "none" ? "active" : ""}`}
-                type="button"
-                onClick={() => setShowExpertModal(true)}
-                disabled={disabled}
-                style={{
-                  height: "32px",
-                  padding: "0 12px",
-                  fontSize: "12px",
-                  borderRadius: "8px",
-                  border: "1px solid var(--border-color)",
-                  background: activeExpert !== "none" ? "var(--bg-active-item)" : "var(--bg-main)",
-                  color: activeExpert !== "none" ? "var(--text-active-item)" : "var(--text-primary)",
-                  borderColor: activeExpert !== "none" ? "var(--color-primary)" : "var(--border-color)",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "4px",
-                  fontWeight: 500,
-                }}
-              >
-                <span>专家配置</span>
-              </button>
+              {/* Design Flow dropdown */}
+              {activeExpert !== "none" && (() => {
+                const expert = getExpertById(experts, activeExpert);
+                if (!expert || expert.styles.length <= 1) return null;
+                return (
+                  <select
+                    className="param-select expert-select"
+                    value={activeStyleId}
+                    onChange={(e) => {
+                       setActiveStyleId(e.target.value);
+                       localStorage.setItem("kkimage_active_style_id", e.target.value);
+                    }}
+                    disabled={isGenerating || disabled}
+                    style={{ height: "32px", fontSize: "12px", maxWidth: "120px" }}
+                    title="设计流派"
+                  >
+                    {expert.styles.map((style) => (
+                      <option key={style.id} value={style.id}>
+                        {style.name.split("(")[0].trim()}
+                      </option>
+                    ))}
+                  </select>
+                );
+              })()}
             </>
           )}
 
           <button
-            className={`btn-generate ${isGenerating ? "generating" : ""}`}
+            className={`btn-generate ${(isGenerating || isSubmitting) ? "generating" : ""}`}
             onClick={handleSubmit}
             disabled={
-              !prompt.trim() ||
-              (mode === "edit" && referenceImages.length === 0) ||
+              (!prompt.trim() && !(mode === "edit" && editTask !== "none")) ||
+              (mode === "edit" && !editOriginal) ||
               isGenerating ||
+              isSubmitting ||
               disabled
             }
           >
-            {isGenerating ? (
+            {isGenerating || isSubmitting ? (
               <>
                 <span className="spinner" />
-                <span>生成中...</span>
+                <span>{isGenerating ? "生成中..." : "提交中..."}</span>
               </>
             ) : (
               <>
@@ -491,8 +1000,9 @@ ${trimmed}`;
       <ExpertModal
         isOpen={showExpertModal}
         onClose={() => setShowExpertModal(false)}
-        config={expertConfig}
-        onSave={handleSaveExpertConfig}
+        experts={experts}
+        activeExpertId={activeExpert !== "none" ? activeExpert : experts[0]?.id || "visio"}
+        onSave={handleSaveExperts}
       />
     </div>
   );

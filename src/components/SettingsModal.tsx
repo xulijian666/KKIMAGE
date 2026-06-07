@@ -40,6 +40,12 @@ const THEME_LABELS: Record<string, string> = {
   "dark-zinc": "暗金",
 };
 
+const TEXT_MODEL_PRESETS = [
+  { id: "deepseek", name: "DeepSeek", baseUrl: "https://api.deepseek.com", models: ["deepseek-v4-flash", "deepseek-v4-pro"] },
+  { id: "openai", name: "OpenAI", baseUrl: "https://api.openai.com/v1", models: ["gpt-4o-mini", "gpt-4o"] },
+  { id: "custom", name: "自定义", baseUrl: "", models: [] },
+];
+
 export function SettingsModal({
   isOpen,
   onClose,
@@ -52,6 +58,15 @@ export function SettingsModal({
   const [baseUrl, setBaseUrl] = useState(import.meta.env.VITE_API_BASE_URL || "https://ai.centos.hk/v1");
   const [testStatus, setTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
   const [testMessage, setTestMessage] = useState("");
+
+  // Text model config
+  const [textBaseUrl, setTextBaseUrl] = useState("https://api.deepseek.com");
+  const [textModel, setTextModel] = useState("deepseek-v4-flash");
+  const [textApiKey, setTextApiKey] = useState("");
+  const [textProvider, setTextProvider] = useState("deepseek");
+  const [textTestStatus, setTextTestStatus] = useState<"idle" | "testing" | "success" | "error">("idle");
+  const [textTestMessage, setTextTestMessage] = useState("");
+
   const [activeTab, setActiveTab] = useState<"general" | "api">("general");
 
   useEffect(() => {
@@ -62,6 +77,17 @@ export function SettingsModal({
         if (map.api_key) setApiKey(map.api_key);
         if (map.base_url) setBaseUrl(map.base_url);
         if (map.default_zoom) onDefaultZoomChange(Number(map.default_zoom) || 1);
+        if (map.text_base_url) setTextBaseUrl(map.text_base_url);
+        if (map.text_model) setTextModel(map.text_model);
+        if (map.text_api_key) setTextApiKey(map.text_api_key);
+        if (map.text_provider) {
+          setTextProvider(map.text_provider);
+        } else if (map.text_base_url) {
+          // Auto-detect provider from base_url
+          const preset = TEXT_MODEL_PRESETS.find((p) => p.id !== "custom" && p.baseUrl === map.text_base_url);
+          if (preset) setTextProvider(preset.id);
+          else setTextProvider("custom");
+        }
       })
       .catch(() => {});
   }, [isOpen, onDefaultZoomChange]);
@@ -82,8 +108,13 @@ export function SettingsModal({
 
 
   const handleSaveApiKey = async () => {
-    await invoke("save_setting", { key: "api_key", value: apiKey });
-    await invoke("save_setting", { key: "base_url", value: baseUrl });
+    try {
+      await invoke("save_setting", { key: "api_key", value: apiKey });
+      await invoke("save_setting", { key: "base_url", value: baseUrl });
+      alert("图片生成 API 配置保存成功！");
+    } catch (err) {
+      alert("保存失败: " + err);
+    }
   };
 
   const handleZoomChange = async (value: number) => {
@@ -104,6 +135,43 @@ export function SettingsModal({
     } catch (err) {
       setTestStatus("error");
       setTestMessage(String(err));
+    }
+  };
+
+  const handleSaveTextApi = async () => {
+    try {
+      await invoke("save_setting", { key: "text_base_url", value: textBaseUrl });
+      await invoke("save_setting", { key: "text_model", value: textModel });
+      await invoke("save_setting", { key: "text_api_key", value: textApiKey });
+      await invoke("save_setting", { key: "text_provider", value: textProvider });
+      alert("文本模型 API 配置保存成功！");
+    } catch (err) {
+      alert("保存失败: " + err);
+    }
+  };
+
+  const handleTextProviderChange = (providerId: string) => {
+    setTextProvider(providerId);
+    const preset = TEXT_MODEL_PRESETS.find((p) => p.id === providerId);
+    if (preset && preset.id !== "custom") {
+      setTextBaseUrl(preset.baseUrl);
+      if (preset.models.length > 0) {
+        setTextModel(preset.models[0]);
+      }
+    }
+  };
+
+  const handleTestTextConnection = async () => {
+    setTextTestStatus("testing");
+    setTextTestMessage("");
+    try {
+      await handleSaveTextApi();
+      const result = await invoke<string>("test_text_api_connection");
+      setTextTestStatus("success");
+      setTextTestMessage(result);
+    } catch (err) {
+      setTextTestStatus("error");
+      setTextTestMessage(String(err));
     }
   };
 
@@ -250,6 +318,96 @@ export function SettingsModal({
                 </div>
 
                 {testMessage && <div className={`test-result ${testStatus}`}>{testMessage}</div>}
+
+                <div className="settings-divider" style={{ margin: "24px 0 16px" }} />
+
+                <h3>
+                  <IconPlug /> 文本模型 (用于 AI 生成 Mermaid)
+                </h3>
+                <p className="settings-hint">
+                  配置文本生成 API，用于将自然语言描述转换为 Mermaid 图表代码。
+                </p>
+
+                <div className="form-group">
+                  <label>模型提供商</label>
+                  <select
+                    className="form-input"
+                    value={textProvider}
+                    onChange={(e) => handleTextProviderChange(e.target.value)}
+                    style={{ cursor: "pointer" }}
+                  >
+                    {TEXT_MODEL_PRESETS.map((p) => (
+                      <option key={p.id} value={p.id}>{p.name}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="form-group">
+                  <label>API Base URL</label>
+                  <input
+                    type="text"
+                    className="form-input"
+                    value={textBaseUrl}
+                    onChange={(e) => setTextBaseUrl(e.target.value)}
+                    placeholder="https://api.deepseek.com"
+                  />
+                </div>
+
+                <div className="form-group">
+                  <label>Model</label>
+                  {(() => {
+                    const preset = TEXT_MODEL_PRESETS.find((p) => p.id === textProvider);
+                    if (preset && preset.models.length > 0) {
+                      return (
+                        <select
+                          className="form-input"
+                          value={textModel}
+                          onChange={(e) => setTextModel(e.target.value)}
+                          style={{ cursor: "pointer" }}
+                        >
+                          {preset.models.map((m) => (
+                            <option key={m} value={m}>{m}</option>
+                          ))}
+                        </select>
+                      );
+                    }
+                    return (
+                      <input
+                        type="text"
+                        className="form-input"
+                        value={textModel}
+                        onChange={(e) => setTextModel(e.target.value)}
+                        placeholder="模型名称，如 gpt-4o-mini"
+                      />
+                    );
+                  })()}
+                </div>
+
+                <div className="form-group">
+                  <label>API Key</label>
+                  <input
+                    type="password"
+                    className="form-input"
+                    value={textApiKey}
+                    onChange={(e) => setTextApiKey(e.target.value)}
+                    placeholder="文本模型 API Key"
+                  />
+                </div>
+
+                <div className="form-actions">
+                  <button className="btn-primary" onClick={handleSaveTextApi}>
+                    保存
+                  </button>
+                  <button
+                    className="btn-secondary"
+                    onClick={handleTestTextConnection}
+                    disabled={textTestStatus === "testing"}
+                  >
+                    {textTestStatus === "testing" ? "测试中..." : "测试连接"}
+                  </button>
+                </div>
+
+                {textTestMessage && <div className={`test-result ${textTestStatus}`}>{textTestMessage}</div>}
               </div>
             )}
           </div>

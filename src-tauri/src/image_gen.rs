@@ -20,7 +20,13 @@ pub async fn generate_image(
 
     let base = base_url.trim_end_matches('/');
     let url = format!("{}/chat/completions", base);
+    println!("[KKIMAGE-API] POST {}", url);
+
     let payload = build_chat_payload(request);
+    println!("[KKIMAGE-API] Payload model={}, image_count={}", request.model, request.input_images.len());
+
+    let payload_str = serde_json::to_string(&payload).unwrap_or_default();
+    println!("[KKIMAGE-API] Payload size: {} bytes", payload_str.len());
 
     let resp = client
         .post(&url)
@@ -29,15 +35,24 @@ pub async fn generate_image(
         .json(&payload)
         .send()
         .await
-        .map_err(|e| format!("网络请求失败: {}", e))?;
+        .map_err(|e| {
+            println!("[KKIMAGE-API] Request FAILED: {}", e);
+            format!("网络请求失败: {}", e)
+        })?;
 
     let status = resp.status();
+    println!("[KKIMAGE-API] Response status: {}", status);
     let resp_text = resp
         .text()
         .await
-        .map_err(|e| format!("读取响应失败: {}", e))?;
+        .map_err(|e| {
+            println!("[KKIMAGE-API] Failed to read response: {}", e);
+            format!("读取响应失败: {}", e)
+        })?;
+    println!("[KKIMAGE-API] Response body size: {} bytes", resp_text.len());
 
     if !status.is_success() {
+        println!("[KKIMAGE-API] API error: {}", &resp_text[..std::cmp::min(500, resp_text.len())]);
         if let Ok(err_resp) = serde_json::from_str::<OpenAIErrorResponse>(&resp_text) {
             return Err(format!("API 错误: {}", err_resp.error.message));
         }
@@ -45,7 +60,13 @@ pub async fn generate_image(
     }
 
     let chat_resp: ChatCompletionResponse =
-        serde_json::from_str(&resp_text).map_err(|e| format!("解析响应失败: {}", e))?;
+        serde_json::from_str(&resp_text).map_err(|e| {
+            println!("[KKIMAGE-API] Failed to parse response JSON: {}", e);
+            format!("解析响应失败: {}", e)
+        })?;
+    println!("[KKIMAGE-API] Parsed response: choices={}, images={}",
+        chat_resp.choices.as_ref().map(|c| c.len()).unwrap_or(0),
+        chat_resp.images.as_ref().map(|i| i.len()).unwrap_or(0));
 
     extract_image_from_response(&client, &chat_resp).await
 }
